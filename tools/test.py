@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "lib"))
 from machine import ROOT, Machine  # noqa: E402
 import pngio  # noqa: E402
+from lumen import SkipTest  # noqa: E402
 
 RESULTS = os.path.join(ROOT, "build", "test-results")
 
@@ -79,12 +80,17 @@ def discover(filters):
 def main():
     tests = discover(sys.argv[1:])
     failed = []
+    skipped = []
     for name, fn in tests:
         t = TestContext(name)
         start = time.monotonic()
         print(f"[ RUN  ] {name}", flush=True)
         try:
             fn(t)
+        except SkipTest as e:
+            skipped.append(name)
+            print(f"[ SKIP ] {name}: {e}", flush=True)
+            continue
         except Exception as e:  # noqa: BLE001 - report every failure kind
             failed.append(name)
             for i, m in enumerate(t.machines):
@@ -98,7 +104,7 @@ def main():
             print(f"[  OK  ] {name} ({time.monotonic() - start:.1f}s)", flush=True)
         finally:
             t.close()
-    print(f"\n{len(tests) - len(failed)}/{len(tests)} passed")
+    print(f"\n{len(tests) - len(failed) - len(skipped)}/{len(tests)} passed, {len(skipped)} skipped")
     if failed:
         print("failed: " + ", ".join(failed))
     sys.exit(1 if failed or not tests else 0)

@@ -1,0 +1,7 @@
+# Seat management: opens DRM and input devices on behalf of the compositor,
+# which runs unprivileged as user "lumen" (member of group "seat").
+description = Seat management daemon
+exec        = /usr/bin/seatd -g seat
+ready       = path:/run/seatd.sock
+restart     = always
+target      = graphical

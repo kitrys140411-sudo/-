@@ -15,23 +15,23 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 - [x] Smoke test: image boots in QEMU/OVMF, screenshot captured
 
 ## M1 — Bootloader (`lumen-boot`, UEFI app)
-- [ ] GOP graphical menu, double-buffered, smooth time-based fade in/out, selection animation
-- [ ] Pre-rasterized Inter glyph atlas embedded at build time (no float math at runtime needed)
-- [ ] Config on ESP (`\loader\lumen.conf`): entries, default, timeout, cmdline
-- [ ] Start kernel as EFI application (EFI stub) with UCS-2 cmdline in LoadOptions
-- [ ] initrd via LoadFile2 on LINUX_EFI_INITRD_MEDIA_GUID vendor media device path
-- [ ] Auto-boot countdown (any key stops it), keyboard navigation, extra entries (firmware setup, reboot, poweroff)
-- [ ] Clear error screen (missing kernel/initrd, bad config, StartImage failure) — never hang
-- [ ] Tests: unit tests for config parser (host), QEMU screenshot + keypress tests
+- [x] GOP graphical menu, double-buffered, smooth time-based fade in/out, selection animation
+- [x] Pre-rasterized Inter glyph atlas embedded at build time (no float math at runtime needed)
+- [x] Config on ESP (`\loader\lumen.conf`): entries, default, timeout, cmdline
+- [x] Start kernel as EFI application (EFI stub) with UCS-2 cmdline in LoadOptions
+- [x] initrd via LoadFile2 on LINUX_EFI_INITRD_MEDIA_GUID vendor media device path
+- [x] Auto-boot countdown (any key stops it), keyboard navigation, extra entries (firmware setup, reboot, poweroff)
+- [x] Clear error screen (missing kernel/initrd, bad config, StartImage failure) — never hang
+- [x] Tests: unit tests for config parser (host), QEMU screenshot + keypress tests
 
 ## M2 — Kernel + init
-- [ ] Linux LTS from kernel.org (sha256 verified), allnoconfig + `kernel/lumen.config` fragment, all built-in, no modules
-- [ ] Config checker: required symbols must be `=y` after olddefconfig
-- [ ] `lumen-init` (static): stage 1 in initramfs (mount, find root by PARTUUID via GPT parse, switch_root, rescue shell on error)
-- [ ] Stage 2: mounts /proc /sys /dev /dev/pts /dev/shm /run /tmp, hostname, loopback, device permissions
-- [ ] Service supervisor: service files, dependencies/ordering, user switching, restart policy, logging to /run/log
-- [ ] Zombie reaping, signals (SIGTERM reboot, SIGUSR2 poweroff, SIGINT ctrl-alt-del), orderly shutdown (TERM→KILL→sync→remount ro→reboot(2))
-- [ ] `lumenctl` (poweroff/reboot/status)
+- [x] Linux LTS from kernel.org (sha256 verified), allnoconfig + `kernel/lumen.config` fragment, all built-in, no modules
+- [x] Config checker: required symbols must be `=y` after olddefconfig
+- [x] `lumen-init` (static): stage 1 in initramfs (mount, find root by PARTUUID via GPT parse, switch_root, rescue shell on error)
+- [x] Stage 2: mounts /proc /sys /dev /dev/pts /dev/shm /run /tmp, hostname, loopback, device permissions
+- [x] Service supervisor: service files, dependencies/ordering, user switching, restart policy, logging to /run/log
+- [x] Zombie reaping, signals (SIGTERM reboot, SIGUSR2 poweroff, SIGINT ctrl-alt-del), orderly shutdown (TERM→KILL→sync→remount ro→reboot(2))
+- [x] `lumenctl` (poweroff/reboot/status)
 - [ ] Boot timing: kernel start → desktop first frame ≤ 5 s (measured, reported via serial)
 
 ## M3 — Shell (`lsh`)

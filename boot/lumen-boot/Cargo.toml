@@ -8,3 +8,8 @@ license.workspace = true
 [dependencies]
 uefi = { version = "0.41", features = ["alloc", "global_allocator", "panic_handler"] }
 bootcfg = { path = "../bootcfg" }
+uefi-raw = "0.17"
+
+[build-dependencies]
+fontdue = "0.9"
+ttf-parser = "0.21"

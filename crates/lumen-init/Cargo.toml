@@ -1,0 +1,9 @@
+[package]
+name = "lumen-init"
+description = "Lumen PID 1: early boot (initramfs), service supervisor, shutdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true

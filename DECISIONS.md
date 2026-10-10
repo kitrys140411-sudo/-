@@ -47,3 +47,39 @@ Each entry: what was chosen and why. Newest at the bottom of each section.
   after zapping; mkimage uses `sgdisk -o ...` and verifies with `sgdisk -v`.
 - Firmware for QEMU is Alpine's `ovmf` package copied to `build/out/ovmf` so all
   hosts run the same firmware; host OVMF locations are a fallback.
+
+## Boot loader (M1)
+
+- **Fonts are rasterized at build time** (build.rs, fontdue): Inter from Alpine's
+  `font-inter`, 4 sub-pixel phases for body sizes, scale 1 and 2. The UEFI target
+  is soft-float, so the loader does only integer work per pixel: blending in linear
+  light via 256/4096-entry LUTs, rounded corners from 4x4-supersampled masks,
+  shadows as triple box blur. Gradients are Bayer-dithered.
+- **Rendering**: static layer rendered once; per frame only the dynamic region is
+  recomposed and blitted (GOP Blt BufferToVideo — required for virtio-gpu GOP,
+  where direct framebuffer writes are not flushed). Animations (fade, spring
+  highlight, dialog) use a TSC clock calibrated against Stall().
+- **LoadImage needs a device path**: current EDK2 returns INVALID_PARAMETER for
+  LoadImage(SourceBuffer) with a NULL DevicePath, so the loader builds
+  `<ESP partition path>/\lumen\vmlinuz.efi`.
+- **initrd** is served by our own LoadFile2 on a vendor-media device path with
+  LINUX_EFI_INITRD_MEDIA_GUID, uninstalled again if the kernel returns.
+- **Logging** goes to the Serial I/O protocol directly (ConOut would draw text over
+  the menu). The watchdog is disabled so the menu may wait forever.
+- OVMF's virtio keyboard drops keys typed faster than ~10/s; tests type slowly.
+
+## Kernel and init (M2)
+
+- Kernel: `allnoconfig` + `kernel/lumen.config`; the build fails if any requested
+  option did not survive `olddefconfig` (caught FB=y needed for deferred fbcon).
+  Everything built in. fbcon with deferred takeover: graphical boot never shows
+  text, the console target still gets a text console on tty1.
+- Kernel/init messages go to ttyS0 only (`console=ttyS0 loglevel=6`); the screen
+  stays black between the boot loader's fade-out and the desktop.
+- initramfs is built with the kernel's `gen_init_cpio` (device nodes without
+  root), zstd-compressed, containing only the static `lumen-init` (+ rescue shell).
+- Root lookup uses `PARTUUID=` from `/sys/class/block/*/uevent` (no GPT parsing).
+- Service files are a small INI dialect; readiness by path or `READY=1` datagram
+  (credentials checked with SCM_CREDENTIALS). Busybox-compatible shutdown signals.
+- `seatd` (Alpine package) gives the unprivileged compositor DRM/input access;
+  `libudev-zero` replaces udevd (no udev daemon at all).

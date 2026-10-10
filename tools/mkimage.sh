@@ -23,7 +23,7 @@ truncate -s "${ESP_MB}M" "$esp"
 mformat -i "$esp" -F -v LUMEN-ESP ::
 mmd -i "$esp" ::/EFI ::/EFI/BOOT ::/loader ::/lumen
 mcopy -i "$esp" "$OUT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
-[ -f "$OUT/lumen.conf" ] && mcopy -i "$esp" "$OUT/lumen.conf" ::/loader/lumen.conf
+mcopy -i "$esp" "${LUMEN_CONF:-boot/esp/lumen.conf}" ::/loader/lumen.conf
 [ -f "$OUT/vmlinuz.efi" ] && mcopy -i "$esp" "$OUT/vmlinuz.efi" ::/lumen/vmlinuz.efi
 [ -f "$OUT/initramfs.img" ] && mcopy -i "$esp" "$OUT/initramfs.img" ::/lumen/initramfs.img
 

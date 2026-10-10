@@ -1,0 +1,6 @@
+# Text-mode session on the first virtual terminal for the "console only" boot entry.
+description = Console shell on tty1
+exec        = /bin/sh -l
+tty         = /dev/tty1
+restart     = always
+target      = console

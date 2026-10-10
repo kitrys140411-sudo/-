@@ -9,7 +9,7 @@
 #   make test    - unit tests (in container) + QEMU integration tests (QMP)
 #   make shell   - interactive shell in the build container
 
-BUILD_IMAGE ?= lumen-build:2
+BUILD_IMAGE ?= lumen-build:3
 DOCKER      ?= docker
 CONTAINER   := DOCKER=$(DOCKER) tools/docker/run.sh $(BUILD_IMAGE)
 STAMP       := build/.toolchain-$(subst :,-,$(BUILD_IMAGE))

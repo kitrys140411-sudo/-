@@ -1,0 +1,25 @@
+# Alpine packages installed into the root filesystem (one per line).
+alpine-baselayout
+alpine-baselayout-data
+alpine-release
+musl
+busybox
+busybox-binsh
+libgcc
+seatd
+libseat
+libudev-zero
+libinput-libs
+libxkbcommon
+xkeyboard-config
+wayland-libs-server
+wayland-libs-client
+wayland-libs-egl
+mesa-egl
+mesa-gles
+mesa-gbm
+mesa-dri-gallium
+font-inter
+font-jetbrains-mono
+font-noto-emoji
+ncurses-terminfo-base

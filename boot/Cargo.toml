@@ -16,5 +16,9 @@ codegen-units = 1
 panic = "abort"
 debug = false
 
+# Build scripts rasterize fonts; keep them fast.
+[profile.release.build-override]
+opt-level = 3
+
 [profile.dev]
 panic = "abort"

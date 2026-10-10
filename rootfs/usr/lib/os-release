@@ -1,0 +1,6 @@
+NAME="Lumen"
+ID=lumen
+ID_LIKE=alpine
+VERSION_ID=0.1
+PRETTY_NAME="Lumen 0.1"
+HOME_URL="https://github.com/kitrys140411-sudo/-"

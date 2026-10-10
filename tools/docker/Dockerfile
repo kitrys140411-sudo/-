@@ -12,7 +12,7 @@ RUN cat /tmp/extra-ca.crt >> /etc/ssl/certs/ca-certificates.crt \
       sgdisk mtools e2fsprogs dosfstools \
       pkgconf mesa-dev libinput-dev libseat-dev eudev-dev \
       libxkbcommon-dev wayland-dev wayland-protocols libdrm-dev \
-      python3 font-inter font-jetbrains-mono ovmf \
+      gawk python3 font-inter font-jetbrains-mono ovmf \
  && cat /tmp/extra-ca.crt >> /etc/ssl/certs/ca-certificates.crt
 
 # Official Rust toolchain (Alpine's rust has no x86_64-unknown-uefi std).
