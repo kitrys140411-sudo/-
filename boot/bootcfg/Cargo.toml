@@ -1,0 +1,8 @@
+[package]
+name = "bootcfg"
+description = "Parser for the Lumen boot loader configuration (no_std, host-testable)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

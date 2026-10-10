@@ -1,0 +1,72 @@
+# Lumen — plan
+
+Minimal x86_64 UEFI Linux system: LTS kernel + everything else written in Rust:
+bootloader, PID 1, shell, Wayland compositor with a GNOME-Shell-like desktop,
+GPU terminal. Rootfs is Alpine (musl + busybox) for libraries only.
+
+Milestones are done strictly in order. A milestone is closed only after it was
+verified by running it (QEMU, screenshot, test), reviewed, and polished.
+
+## M0 — Skeleton
+- [x] Repository layout, Cargo workspaces (`boot/` UEFI, `crates/` Linux userspace)
+- [x] Build container (Alpine 3.24 + rustup toolchain, kernel build deps, sgdisk/mtools/e2fsprogs)
+- [x] `make image` (rootless image assembly: mke2fs -d, mtools, sgdisk), `make run`, `make test`
+- [x] QEMU runner + QMP client (screendump, input-send-event, serial capture) for UI autotests
+- [x] Smoke test: image boots in QEMU/OVMF, screenshot captured
+
+## M1 — Bootloader (`lumen-boot`, UEFI app)
+- [ ] GOP graphical menu, double-buffered, smooth time-based fade in/out, selection animation
+- [ ] Pre-rasterized Inter glyph atlas embedded at build time (no float math at runtime needed)
+- [ ] Config on ESP (`\loader\lumen.conf`): entries, default, timeout, cmdline
+- [ ] Start kernel as EFI application (EFI stub) with UCS-2 cmdline in LoadOptions
+- [ ] initrd via LoadFile2 on LINUX_EFI_INITRD_MEDIA_GUID vendor media device path
+- [ ] Auto-boot countdown (any key stops it), keyboard navigation, extra entries (firmware setup, reboot, poweroff)
+- [ ] Clear error screen (missing kernel/initrd, bad config, StartImage failure) — never hang
+- [ ] Tests: unit tests for config parser (host), QEMU screenshot + keypress tests
+
+## M2 — Kernel + init
+- [ ] Linux LTS from kernel.org (sha256 verified), allnoconfig + `kernel/lumen.config` fragment, all built-in, no modules
+- [ ] Config checker: required symbols must be `=y` after olddefconfig
+- [ ] `lumen-init` (static): stage 1 in initramfs (mount, find root by PARTUUID via GPT parse, switch_root, rescue shell on error)
+- [ ] Stage 2: mounts /proc /sys /dev /dev/pts /dev/shm /run /tmp, hostname, loopback, device permissions
+- [ ] Service supervisor: service files, dependencies/ordering, user switching, restart policy, logging to /run/log
+- [ ] Zombie reaping, signals (SIGTERM reboot, SIGUSR2 poweroff, SIGINT ctrl-alt-del), orderly shutdown (TERM→KILL→sync→remount ro→reboot(2))
+- [ ] `lumenctl` (poweroff/reboot/status)
+- [ ] Boot timing: kernel start → desktop first frame ≤ 5 s (measured, reported via serial)
+
+## M3 — Shell (`lsh`)
+- [ ] Lexer/parser: words, quotes, escapes, `$VAR ${VAR} ${VAR:-x}` etc., `$?` `$$` `$!` `$#` `$@`, `$(...)`, `$((...))`, tilde, globs
+- [ ] Pipelines, redirects (`< > >> 2> 2>&1 &> <<EOF <<-`), lists `; & && ||`, `( )`, `{ }`, if/while/until/for/case, functions
+- [ ] Builtins: cd, pwd, echo, export, unset, set, exit, true/false, test/[, read, source/., alias, jobs, fg, bg, wait, history, type, kill, shift, return, local
+- [ ] Job control: process groups, terminal ownership, Ctrl+C/Ctrl+Z, fg/bg, job notifications
+- [ ] Line editor: raw mode, cursor movement, word ops, history (persistent, search Ctrl+R), completion (commands, paths), syntax highlighting, configurable prompt (`PS1` escapes, `~/.lshrc`)
+- [ ] Tests: parser unit tests + POSIX scenario tests (compared against expected output), job control test through a PTY
+
+## M4 — Compositor (`lumen`, smithay)
+- [ ] udev/DRM/KMS backend: GBM + EGL + GLES, page flip on vblank, frame scheduling, libseat session, libinput
+- [ ] winit backend (dev), headless offscreen backend (tests, profiling, screenshots on host)
+- [ ] Damage tracking (OutputDamageTracker), only damaged regions re-rendered
+- [ ] Protocols: xdg-shell, xdg-decoration, data-device (clipboard) + primary selection, fractional-scale, viewporter, cursor-shape, presentation-time, linux-dmabuf, xdg-activation, single-pixel-buffer
+- [ ] Spring-based window animations (open/close/move/maximize), time-based
+- [ ] Keyboard (xkbcommon), pointer, focus, move/resize, keybindings
+
+## M5 — Desktop shell (in compositor)
+- [ ] Theme file (`theme.toml`): colors, radii, shadows, blur, timings, spacing grid
+- [ ] Custom GLES effects: rounded corners, soft shadows, dual-Kawase blur (glass)
+- [ ] Text rendering for UI (Inter), gamma-correct
+- [ ] Top panel (Activities, clock, status), Overview (window grid + search + app launch), workspaces with animated switching
+- [ ] Alt+Tab switcher, notifications (IPC + toasts), dock
+- [ ] Desktop entries (`.desktop` parsing) for the app list
+
+## M6 — Terminal (`lumen-term`)
+- [ ] PTY, vte-based parser, xterm-compatible state machine (truecolor, 256, alt screen, scroll regions, modes, mouse 1000/1002/1003/1006, bracketed paste, focus, OSC 0/2/4/8/10/11/52, DA/DSR)
+- [ ] Unicode: grapheme clusters, wide chars, emoji, font fallback chain
+- [ ] GPU renderer (EGL+GLES on Wayland): glyph atlas, instanced quads, subpixel positioning, gamma-correct blending
+- [ ] Smooth scroll with inertia, smooth cursor, scrollback ring + search, selection (word/line), clipboard
+- [ ] Tabs and splits, TOML config
+- [ ] vttest run, parser unit tests, large-file throughput benchmark
+
+## M7 — Polish
+- [ ] Profiling, frame-time HUD, screenshot regression suite, boot time, image size
+- [ ] README.md, ARCHITECTURE.md, `tools/write-usb.sh` (manual use only, refuses non-removable devices)
+- [ ] Final audit

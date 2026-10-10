@@ -1,0 +1,27 @@
+# Build environment for Lumen. Everything that ends up in the image is built here,
+# so the libc (musl) and system libraries match the Alpine rootfs exactly.
+FROM alpine:3.24
+
+# Optional extra CA bundle (corporate / sandbox HTTPS proxies). Empty by default.
+COPY extra-ca.crt /tmp/extra-ca.crt
+RUN cat /tmp/extra-ca.crt >> /etc/ssl/certs/ca-certificates.crt \
+ && sed -i 's/^http:/https:/' /etc/apk/repositories \
+ && apk add --no-cache \
+      build-base linux-headers perl bc flex bison elfutils-dev openssl-dev \
+      xz zstd cpio findutils diffutils coreutils curl ca-certificates git \
+      sgdisk mtools e2fsprogs dosfstools \
+      pkgconf mesa-dev libinput-dev libseat-dev eudev-dev \
+      libxkbcommon-dev wayland-dev wayland-protocols libdrm-dev \
+      python3 font-inter font-jetbrains-mono ovmf \
+ && cat /tmp/extra-ca.crt >> /etc/ssl/certs/ca-certificates.crt
+
+# Official Rust toolchain (Alpine's rust has no x86_64-unknown-uefi std).
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -sSf -o /tmp/rustup-init \
+      https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-musl/rustup-init \
+ && chmod +x /tmp/rustup-init \
+ && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
+ && rm /tmp/rustup-init
+COPY rust-toolchain.toml /tmp/tc/rust-toolchain.toml
+RUN cd /tmp/tc && rustup toolchain install && rustc --version \
+ && rm -rf /tmp/tc && chmod -R a+rwX /opt/cargo /opt/rustup
