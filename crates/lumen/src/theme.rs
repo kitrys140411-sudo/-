@@ -75,6 +75,9 @@ pub struct Colors {
     pub wallpaper_glow_b: Color,
     pub panel: Color,
     pub glass_tint: Color,
+    /// Tint of glass cards (menus, notifications, switcher): denser than the
+    /// dock's so text on them stays readable over anything.
+    pub glass_surface: Color,
     pub surface: Color,
     pub surface_hover: Color,
     pub border: Color,
@@ -97,6 +100,7 @@ impl Default for Colors {
             wallpaper_glow_b: c("#b05bd6"),
             panel: c("#0b0b0fd9"),
             glass_tint: c("#16161cb3"),
+            glass_surface: c("#1a1a22d0"),
             surface: c("#1d1d25f2"),
             surface_hover: c("#2a2a36ff"),
             border: c("#ffffff1a"),

@@ -135,6 +135,20 @@ pub fn paint(
     }
 }
 
+/// Diagonal stripes in a few saturated colors over the body.
+pub fn stripes(canvas: &mut [u8], stride: usize, layout: &Layout, scale: f64) {
+    const COLORS: [Rgb; 4] = [(0xf2, 0x5f, 0x5c), (0xff, 0xe0, 0x66), (0x24, 0x7b, 0xa0), (0x70, 0xc1, 0xb3)];
+    let band = ((24.0 * scale).round() as u32).max(1);
+    let b = layout.border;
+    for y in layout.body_top..layout.height.saturating_sub(b) {
+        for x in b..layout.width.saturating_sub(b) {
+            let c = COLORS[(((x + y) / band) % COLORS.len() as u32) as usize];
+            let i = y as usize * stride + x as usize * 4;
+            canvas[i..i + 4].copy_from_slice(&[c.2, c.1, c.0, 0xff]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

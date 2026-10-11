@@ -163,6 +163,20 @@ class Compositor:
     def windows(self):
         return json.loads(self.ipc("windows"))
 
+    def shell(self):
+        return json.loads(self.ipc("shell"))
+
+    def hit(self, name, timeout=10):
+        """Center of the shell's clickable region `name` (e.g. "Power", "DockItem(0)")."""
+        deadline = time.time() + timeout
+        while True:
+            for h in self.shell()["hits"]:
+                if h["hit"] == name:
+                    return h["x"] + h["w"] / 2, h["y"] + h["h"] / 2, h
+            if time.time() > deadline:
+                raise AssertionError(f"no shell hit {name}: {[h['hit'] for h in self.shell()['hits']]}")
+            time.sleep(0.05)
+
     def window(self, title):
         for w in self.windows():
             if w["title"] == title:

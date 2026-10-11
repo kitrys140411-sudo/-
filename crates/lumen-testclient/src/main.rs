@@ -468,6 +468,9 @@ impl App {
             Some(paint::darker(fill)),
             bar.map(|r| (r, bar_color)),
         );
+        if self.opts.stripes {
+            paint::stripes(canvas, pw as usize * 4, &layout, scale);
+        }
 
         let surface = self.window.wl_surface().clone();
         self.apply_scale(&surface, self.main.viewport.as_ref(), self.size);

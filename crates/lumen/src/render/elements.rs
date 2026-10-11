@@ -147,14 +147,15 @@ pub struct Clip {
 }
 
 /// A client surface with an animation transform and rounded clipping:
-/// final = (inner - origin) * scale + origin + offset.
+/// final = (inner - origin) * scale + origin + offset, with separate x and y
+/// scales (maximize morphs stretch windows non-uniformly).
 pub struct WindowSurfaceElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     /// Replaces the surface's id when the same surface is drawn twice in one
     /// frame (switcher thumbnails), so damage tracking keeps them apart.
     alias: Option<Id>,
     origin: Point<f64, Physical>,
-    scale: f64,
+    scale: (f64, f64),
     offset: Point<f64, Physical>,
     clip: Option<Clip>,
     program: GlesTexProgram,
@@ -166,7 +167,7 @@ impl WindowSurfaceElement {
     pub fn new(
         inner: WaylandSurfaceRenderElement<GlesRenderer>,
         origin: Point<f64, Physical>,
-        scale: f64,
+        scale: (f64, f64),
         offset: Point<f64, Physical>,
         clip: Option<Clip>,
         program: GlesTexProgram,
@@ -191,13 +192,13 @@ impl WindowSurfaceElement {
 
     fn map_point(&self, p: Point<f64, Physical>) -> Point<f64, Physical> {
         Point::from((
-            (p.x - self.origin.x) * self.scale + self.origin.x + self.offset.x,
-            (p.y - self.origin.y) * self.scale + self.origin.y + self.offset.y,
+            (p.x - self.origin.x) * self.scale.0 + self.origin.x + self.offset.x,
+            (p.y - self.origin.y) * self.scale.1 + self.origin.y + self.offset.y,
         ))
     }
 
     fn is_identity(&self) -> bool {
-        self.scale == 1.0 && self.offset.x.fract() == 0.0 && self.offset.y.fract() == 0.0
+        self.scale == (1.0, 1.0) && self.offset.x.fract() == 0.0 && self.offset.y.fract() == 0.0
     }
 
     fn clip_uniforms(&self, src: Rectangle<f64, Buffer>, dst: Rectangle<i32, Physical>) -> Option<Vec<Uniform<'static>>> {
@@ -246,10 +247,10 @@ impl Element for WindowSurfaceElement {
 
     fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         let damage = self.inner.damage_since(scale, commit);
-        if self.scale == 1.0 {
+        if self.scale == (1.0, 1.0) {
             return damage;
         }
-        damage.into_iter().map(|r| r.to_f64().upscale(self.scale).to_i32_up()).collect()
+        damage.into_iter().map(|r| r.to_f64().upscale(Scale::from(self.scale)).to_i32_up()).collect()
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -257,7 +258,7 @@ impl Element for WindowSurfaceElement {
         // for unclipped, unscaled surfaces (e.g. maximized windows).
         match self.clip {
             Some(c) if c.radius > 0.0 => OpaqueRegions::default(),
-            _ if self.scale != 1.0 => OpaqueRegions::default(),
+            _ if self.scale != (1.0, 1.0) => OpaqueRegions::default(),
             _ => self.inner.opaque_regions(scale),
         }
     }
@@ -488,7 +489,36 @@ impl Image {
         program: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
         key: &[f32],
     ) -> ImageElement {
-        let k: Vec<u32> = key.iter().map(|v| v.to_bits()).chain([alpha.to_bits()]).collect();
+        let src = Rectangle::from_size((self.size.w as f64, self.size.h as f64).into());
+        self.element_src(dst, src, alpha, program, key)
+    }
+
+    pub fn texture(&self) -> &GlesTexture {
+        &self.texture
+    }
+
+    /// Replace the texture (new content, same element).
+    pub fn set_texture(&mut self, texture: GlesTexture, size: Size<i32, Physical>) {
+        self.texture = texture;
+        self.size = size;
+        self.commit.increment();
+    }
+
+    /// The part `src` (texture pixels) of the image drawn into `dst`.
+    pub fn element_src(
+        &mut self,
+        dst: Rectangle<i32, Physical>,
+        src: Rectangle<f64, Buffer>,
+        alpha: f32,
+        program: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        key: &[f32],
+    ) -> ImageElement {
+        let k: Vec<u32> = key
+            .iter()
+            .chain(&[src.loc.x as f32, src.loc.y as f32, src.size.w as f32, src.size.h as f32])
+            .map(|v| v.to_bits())
+            .chain([alpha.to_bits()])
+            .collect();
         if k != self.last_key {
             self.last_key = k;
             self.commit.increment();
@@ -501,7 +531,7 @@ impl Image {
             id: self.id.clone(),
             commit: self.commit,
             texture: self.texture.clone(),
-            tex_size: self.size,
+            src,
             dst,
             alpha,
             program,
@@ -516,7 +546,7 @@ pub struct ImageElement {
     id: Id,
     commit: CommitCounter,
     texture: GlesTexture,
-    tex_size: Size<i32, Physical>,
+    src: Rectangle<f64, Buffer>,
     dst: Rectangle<i32, Physical>,
     alpha: f32,
     program: Option<GlesTexProgram>,
@@ -534,7 +564,7 @@ impl Element for ImageElement {
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
-        Rectangle::from_size((self.tex_size.w as f64, self.tex_size.h as f64).into())
+        self.src
     }
 
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {

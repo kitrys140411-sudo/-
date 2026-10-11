@@ -164,5 +164,52 @@ Each entry: what was chosen and why. Newest at the bottom of each section.
   fine natively). Tests run TCG guests with `-cpu max,avx2=off,avx512f=off`; KVM
   guests use `-cpu host`.
 - Client-side decorations everywhere (like GNOME); the compositor only adds rounded
-  corners and shadows. Multiple outputs are placed left to right; the shell UI is
-  drawn on every output, window management uses the primary one.
+  corners and shadows. Multiple outputs are placed left to right; window management
+  and the shell UI use the primary output (see M5).
+- **Review fixes (after M4)**: popup grabs only for the focused window and dismissed
+  on focus change; xdg-activation tokens only for the focused client, single use,
+  10 s lifetime; pointer focus re-evaluated after map/unmap/restack, during
+  animations and before button/axis events; the default cursor returns when the
+  pointer leaves clients; frame callbacks, presentation feedback and preferred scale
+  come from the output showing most of a window (no double frame rate on two
+  outputs); unplugged outputs send leave and their global is disabled, then removed.
+
+## Desktop shell (M5)
+
+- **Text: own engine (`crates/lumen-text`) on FreeType + HarfBuzz** through the
+  `-sys` crates (system libraries, no Rust font stack). Fonts are found by scanning
+  `/usr/share/fonts` (no fontconfig in the image); a fallback chain (UI family,
+  color emoji, every other face) is resolved per grapheme cluster; HarfBuzz shapes
+  runs; glyphs are rasterized with light hinting at 4 horizontal subpixel phases
+  (`FT_Outline_Translate`) and cached; coverage goes through a gamma LUT (1.6) so
+  light-on-dark text keeps its weight; color emoji strikes are resampled. Layout
+  does wrapping, ellipsizing (binary search over grapheme prefixes) and alignment.
+  Labels are cached as textures keyed by text/style/scale and evicted when unused.
+- **Vector art instead of icon/cursor themes**: cursors (arrow, hand, grab, text,
+  resize, busy spinner…) and shell icons (terminal, app grid, search, power, generic
+  letter tiles) are drawn from paths with FreeType's outline rasterizer and stroker
+  at the exact pixel size for the output scale. An installed XCursor theme still
+  wins when present (`$XCURSOR_THEME`), resampled to the exact size.
+- **Glass**: panes (panel, dock, menus, notifications, switcher) are frosted for
+  real: the elements behind a pane are drawn into an output-sized scratch texture
+  (only the pane's region plus the blur's reach), blurred with dual Kawase over that
+  region, and drawn under the pane with a shader that saturates, tints, clips to the
+  rounded rectangle and adds a hairline highlight. A pane is re-blurred only when
+  the ids, commit counters, positions or opacities of the elements it covers change
+  (hashed every frame), so an idle desktop does no blur work. Panes are processed
+  back to front so a menu over the dock frosts the dock's glass too.
+- **Maximize/tile morph**: on a layout change the window keeps its old place until
+  the client commits a buffer of the requested size, then its new buffer is drawn
+  stretched (separate x/y scale) from the old rectangle to the new one while corner
+  radii blend between rounded and square. A client that does not resize within
+  400 ms just slides. Closing windows fade from a snapshot drawn exactly where (and
+  at the stacking position where) they were last shown.
+- **Apps** come from `.desktop` files (XDG dirs or `$LUMEN_APPS_DIR`), with our own
+  Exec parser (quotes, field codes); search scores name prefix > word prefix >
+  substring > keywords/comment. The dock shows favorites (`$LUMEN_FAVORITES`) and
+  running apps, matching windows by app id or executable name.
+- **Shell UI on the primary output only** (like GNOME's default); other outputs show
+  windows and the wallpaper. Interactive regions are recorded while drawing, so hit
+  testing always matches what is on screen.
+- **Power menu**: Log Out stops the compositor; Restart/Power Off are requests
+  written to init's control socket (`/run/lumen/control`), never direct syscalls.

@@ -3,6 +3,7 @@
 
 pub mod blur;
 pub mod elements;
+pub mod glass;
 pub mod shaders;
 
 use std::collections::HashMap;
@@ -58,6 +59,9 @@ pub struct RenderState {
     pub aliases: HashMap<(Id, u8), Id>,
     pub text: crate::text::UiText,
     pub icons: crate::icons::IconCache,
+    pub glass: glass::GlassCache,
+    /// Glass panes requested by the shell for the frame being built.
+    pub glass_requests: Vec<glass::GlassRequest>,
 }
 
 impl RenderState {
@@ -70,6 +74,8 @@ impl RenderState {
             aliases: HashMap::new(),
             text: crate::text::UiText::new(&theme.fonts.ui),
             icons: crate::icons::IconCache::default(),
+            glass: glass::GlassCache::default(),
+            glass_requests: Vec::new(),
         }
     }
 }
@@ -217,13 +223,14 @@ fn push_window(
 ) -> Option<WindowSnapshot> {
     let geo = w.window.geometry();
     let geo_phys_w = (geo.size.w as f64 * scale).max(1.0);
-    let total = f.size.w / geo_phys_w;
-    let unscaled = (total - 1.0).abs() < 1e-6;
+    let geo_phys_h = (geo.size.h as f64 * scale).max(1.0);
+    let total = (f.size.w / geo_phys_w, f.size.h / geo_phys_h);
+    let unscaled = (total.0 - 1.0).abs() < 1e-6 && (total.1 - 1.0).abs() < 1e-6;
     let base = Point::<i32, Physical>::from((f.loc.x.round() as i32, f.loc.y.round() as i32));
     let render_loc = base - geo.loc.to_physical_precise_round(scale);
     let origin = base.to_f64();
     let (offset, clip_geo) = if unscaled {
-        (Point::<f64, Physical>::from((0.0, 0.0)), Rectangle::new(origin, (geo_phys_w, geo.size.h as f64 * scale).into()))
+        (Point::<f64, Physical>::from((0.0, 0.0)), Rectangle::new(origin, (geo_phys_w, geo_phys_h).into()))
     } else {
         (f.loc - origin, f)
     };
@@ -352,6 +359,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     }
 
     // Cursor (and a drag icon) on top, then the shell UI.
+    ctx.rs.glass_requests.clear();
     cursor_elements(r, ctx, out_rect, scale, &mut elements);
     if ctx.primary.as_deref().is_none_or(|p| p == out_name) {
         crate::shell::render::overlay_elements(r, ctx, output, out_rect, scale, &mut elements);
@@ -403,6 +411,12 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         // Unscaled rect U (logical, output-local); in the overview it moves
         // toward the window's slot.
         let mut u = Rectangle::<f64, Logical>::new((geo.loc.x + ws_dx - out_rect.loc.x, geo.loc.y - out_rect.loc.y).into(), geo.size);
+        // Maximize/tile morph: stretch from the old rectangle.
+        let morph_t = w.morph.as_ref().map(|m| m.t.value);
+        if let Some(m) = &w.morph {
+            let from = Rectangle::<f64, Logical>::new((m.from.loc.x + ws_dx - out_rect.loc.x, m.from.loc.y - out_rect.loc.y).into(), m.from.size);
+            u = lerp_rect(from, u, m.t.value);
+        }
         if let Some(slot) = slots.get(&w.id) {
             let k = (slot.size.w / geo.size.w.max(1.0)).min(slot.size.h / geo.size.h.max(1.0));
             let target = Rectangle::<f64, Logical>::new(
@@ -425,9 +439,14 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
             (f_log.loc.x * scale, f_log.loc.y * scale).into(),
             (f_log.size.w * scale, f_log.size.h * scale).into(),
         );
-        let total = f_log.size.w / geo.size.w.max(1.0);
-        let square = matches!(w.layout, Layout::Maximized { .. } | Layout::Fullscreen { .. }) && overview <= 0.0;
-        let radius = if square { 0.0 } else { (g.window_radius * scale * total) as f32 };
+        let total = (f_log.size.w / geo.size.w.max(1.0)).min(f_log.size.h / geo.size.h.max(1.0));
+        let square = w.is_square() && overview <= 0.0;
+        let mut corner = if square { 0.0 } else { 1.0 };
+        if let (Some(t), Some(m)) = (morph_t, &w.morph) {
+            let from = if m.from_square { 0.0 } else { 1.0 };
+            corner = from + (corner - from) * t.clamp(0.0, 1.0);
+        }
+        let radius = (g.window_radius * scale * total.min(1.0) * corner) as f32;
         let shaders = ctx.rs.shaders.as_ref().unwrap();
 
         if hovered == Some(w.id) {
@@ -518,6 +537,14 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     }
     if let Some(wp) = ctx.rs.wallpapers.get_mut(&(phys.w, phys.h)) {
         elements.push(LumenElement::Image(wp.image.element_in(full, 1.0, None, &[])));
+    }
+    // Frost what is behind the shell's glass panes.
+    let requests = std::mem::take(&mut ctx.rs.glass_requests);
+    if !requests.is_empty() {
+        let RenderState { shaders, glass, .. } = &mut *ctx.rs;
+        if let Some(shaders) = shaders.as_ref() {
+            glass.apply(r, shaders, theme, &out_name, phys, requests, &mut elements, clear);
+        }
     }
     ctx.rs.text.end_frame();
     (elements, clear)

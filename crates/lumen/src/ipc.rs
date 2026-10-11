@@ -164,6 +164,7 @@ impl Lumen {
             }
             ("socket", []) => self.socket_name.to_string_lossy().into_owned(),
             ("stats", []) => self.ipc_stats(),
+            ("shell", []) => self.ipc_shell(),
             ("stats-reset", []) => {
                 self.stats = Default::default();
                 "ok".into()
@@ -275,11 +276,57 @@ impl Lumen {
                     w.mapped,
                     self.wm.focused == Some(w.id),
                     layout,
-                    !w.pos.is_settled() || !w.open.is_settled(),
+                    !w.pos.is_settled() || !w.open.is_settled() || w.morph.is_some() || w.pending_morph.is_some(),
                 )
             })
             .collect();
         format!("[{}]", items.join(","))
+    }
+
+    /// Shell state for tests: overview, search, dock, menus, notifications
+    /// and the clickable regions of the last frame.
+    fn ipc_shell(&self) -> String {
+        let sh = &self.shell;
+        let ids = |v: &[usize]| v.iter().filter_map(|&i| sh.apps.get(i)).map(|a| json_str(&a.id)).collect::<Vec<_>>().join(",");
+        let notes: Vec<String> = sh
+            .notifications
+            .iter()
+            .map(|n| format!("{{\"id\":{},\"title\":{},\"body\":{}}}", n.id, json_str(&n.title), json_str(&n.body)))
+            .collect();
+        let dock: Vec<String> = sh
+            .dock_items(&self.wm)
+            .iter()
+            .map(|d| format!("{{\"id\":{},\"name\":{},\"windows\":{}}}", json_str(&d.id), json_str(&d.name), d.windows.len()))
+            .collect();
+        let hits: Vec<String> = sh
+            .hits
+            .iter()
+            .map(|(r, h)| {
+                format!(
+                    "{{\"hit\":{},\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}}}",
+                    json_str(&format!("{h:?}")),
+                    r.loc.x,
+                    r.loc.y,
+                    r.size.w,
+                    r.size.h
+                )
+            })
+            .collect();
+        format!(
+            "{{\"overview\":{},\"apps_mode\":{},\"query\":{},\"results\":[{}],\"visible_apps\":[{}],\"selected\":{},\"popover\":{},\"switcher\":{},\"dock_shown\":{:.3},\"notifications\":[{}],\"dock\":[{}],\"hits\":[{}]}}",
+            sh.overview_open,
+            sh.apps_mode,
+            json_str(&sh.query),
+            ids(&sh.results),
+            ids(&sh.visible_apps()),
+            sh.selected,
+            sh.popover.as_ref().is_some_and(|p| p.open),
+            sh.switcher.is_some(),
+            sh.dock.value,
+            notes.join(","),
+            dock.join(","),
+            hits.join(","),
+        )
     }
 
     fn ipc_outputs(&self) -> String {

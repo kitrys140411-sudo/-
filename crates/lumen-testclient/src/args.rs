@@ -70,6 +70,8 @@ pub struct Options {
     pub popup: bool,
     pub exit_after_ms: Option<u64>,
     pub close_on_key: bool,
+    /// Paint colorful diagonal stripes over the body (for blur screenshots).
+    pub stripes: bool,
 }
 
 impl Default for Options {
@@ -88,6 +90,7 @@ impl Default for Options {
             popup: false,
             exit_after_ms: None,
             close_on_key: false,
+            stripes: false,
         }
     }
 }
@@ -117,6 +120,7 @@ usage: lumen-testclient [OPTIONS]
   --popup                open an xdg_popup on right click, close it on the next click
   --exit-after-ms N      exit cleanly after N milliseconds
   --close-on-key         exit when Escape is pressed
+  --stripes              paint colorful diagonal stripes over the body
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -197,6 +201,10 @@ where
             "--close-on-key" => {
                 takes_no_value(&flag)?;
                 opts.close_on_key = true;
+            }
+            "--stripes" => {
+                takes_no_value(&flag)?;
+                opts.stripes = true;
             }
             _ => return Err(format!("unknown argument {arg:?}")),
         }

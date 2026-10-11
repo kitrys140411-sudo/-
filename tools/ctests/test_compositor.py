@@ -1,4 +1,6 @@
 """Milestone 4: compositor behavior with real Wayland clients (headless)."""
+import os
+import re
 import time
 
 from headless import BTN_LEFT, BTN_RIGHT
@@ -128,6 +130,48 @@ def test_maximize_tile_restore(t):
     geometry(("tiled-right", 640, 32, 640, 768))
     c.action("restore")
     geometry(("floating", w["x"], w["y"], 600, 400))
+
+
+def red_box(img, step=4):
+    """Bounding box (x0, y0, x1, y1) of strongly red pixels, sampled every `step` px."""
+    xs, ys = [], []
+    for y in range(0, img.height, step):
+        for x in range(0, img.width, step):
+            r, g, b = img.pixel(x, y)
+            if r > 180 and g < 70 and b < 70:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def test_maximize_morphs_geometry(t):
+    # Slow animations so frames in the middle of the morph can be caught.
+    os.makedirs(t.dir, exist_ok=True)
+    theme = os.path.join(t.dir, "slow.toml")
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "rootfs/usr/share/lumen/theme.toml")) as f:
+        text = f.read()
+    with open(theme, "w") as f:
+        f.write(re.sub(r"(?m)^speed\s*=.*$", "speed = 0.15", text))
+    c = t.compositor(env={"LUMEN_THEME": theme})
+    client, w = c.map_window("morph", "--size", "400x300", "--color", "#e01818")
+    c.wait(lambda: not c.window("morph")["animating"], 20, "mapped")
+    c.action("maximize")
+    widths = []
+    for i in range(12):
+        box = red_box(c.screenshot(f"morph-{i}"))
+        if box:
+            widths.append(box[2] - box[0])
+        if widths and widths[-1] > 1200:
+            break
+    # Some frame shows the window stretched between its old and new size
+    # (not the old size moved, nor the new size at once).
+    t.check(any(420 < w_ < 1200 for w_ in widths), f"no intermediate width: {widths}")
+    c.wait(lambda: not c.window("morph")["animating"], 30, "morph done")
+    box = red_box(c.screenshot("maximized"), step=2)
+    t.check(box is not None and box[0] <= 2 and box[2] >= 1276 and abs(box[1] - 32 - 24) <= 4, f"final {box}")
 
 
 def test_client_maximize_and_fullscreen_requests(t):

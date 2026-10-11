@@ -32,12 +32,21 @@ impl BlurCache {
     pub fn clear(&mut self) {
         self.textures.clear();
     }
+
+    /// Keep the cache bounded (glass panes of changing sizes add entries).
+    pub fn trim(&mut self, max: usize) {
+        if self.textures.len() > max {
+            self.textures.clear();
+        }
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pass(
     r: &mut GlesRenderer,
     src: &GlesTexture,
     src_size: Size<i32, Physical>,
+    src_rect: Option<Rectangle<i32, Physical>>,
     dst: &mut GlesTexture,
     dst_size: Size<i32, Physical>,
     program: &GlesTexProgram,
@@ -46,7 +55,10 @@ fn pass(
     let mut fb = r.bind(dst)?;
     let mut frame = r.render(&mut fb, dst_size, Transform::Normal)?;
     let full = Rectangle::from_size(dst_size);
-    let src_rect = Rectangle::<f64, Buffer>::from_size((src_size.w as f64, src_size.h as f64).into());
+    let src_rect = match src_rect {
+        Some(s) => Rectangle::<f64, Buffer>::new((s.loc.x as f64, s.loc.y as f64).into(), (s.size.w as f64, s.size.h as f64).into()),
+        None => Rectangle::<f64, Buffer>::from_size((src_size.w as f64, src_size.h as f64).into()),
+    };
     frame.clear(Color32F::TRANSPARENT, &[full])?;
     frame.render_texture_from_to(
         src,
@@ -79,14 +91,34 @@ pub fn blur_into(
     offset: f32,
     dst: &mut GlesTexture,
 ) -> Result<(), GlesError> {
+    blur_region(r, shaders, cache, src, size, Rectangle::from_size(size), passes, offset, dst)
+}
+
+/// Blur the `region` of `src` (a texture of `src_size`) into `dst`, which
+/// has the region's size.
+#[allow(clippy::too_many_arguments)]
+pub fn blur_region(
+    r: &mut GlesRenderer,
+    shaders: &Shaders,
+    cache: &mut BlurCache,
+    src: &GlesTexture,
+    src_size: Size<i32, Physical>,
+    region: Rectangle<i32, Physical>,
+    passes: u32,
+    offset: f32,
+    dst: &mut GlesTexture,
+) -> Result<(), GlesError> {
     let passes = passes.clamp(1, 6);
+    let size = region.size;
     let mut sizes = vec![size];
     let mut cur = src.clone();
-    let mut cur_size = size;
+    let mut cur_size = src_size;
+    let mut cur_rect = Some(region);
     for level in 1..=passes {
-        let ns = Size::from(((cur_size.w / 2).max(1), (cur_size.h / 2).max(1)));
+        let base = sizes[level as usize - 1];
+        let ns = Size::from(((base.w / 2).max(1), (base.h / 2).max(1)));
         let mut t = cache.get(r, 0, level, ns)?;
-        pass(r, &cur, cur_size, &mut t, ns, &shaders.kawase_down, offset)?;
+        pass(r, &cur, cur_size, cur_rect.take(), &mut t, ns, &shaders.kawase_down, offset)?;
         sizes.push(ns);
         cur = t;
         cur_size = ns;
@@ -94,11 +126,11 @@ pub fn blur_into(
     for level in (0..passes).rev() {
         let ts = sizes[level as usize];
         if level == 0 {
-            pass(r, &cur, cur_size, dst, ts, &shaders.kawase_up, offset)?;
+            pass(r, &cur, cur_size, None, dst, ts, &shaders.kawase_up, offset)?;
             break;
         }
         let mut t = cache.get(r, 1, level, ts)?;
-        pass(r, &cur, cur_size, &mut t, ts, &shaders.kawase_up, offset)?;
+        pass(r, &cur, cur_size, None, &mut t, ts, &shaders.kawase_up, offset)?;
         cur = t;
         cur_size = ts;
     }

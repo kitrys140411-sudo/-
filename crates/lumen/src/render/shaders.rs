@@ -175,9 +175,11 @@ uniform float radius;     // physical px
 uniform vec4 tint_color;  // premultiplied
 uniform float saturation;
 uniform float highlight;
+uniform vec4 uv_rect;     // the part of the texture drawn (x, y, w, h in uv)
 
 void main() {
-    vec2 px = v_coords * px_size;
+    vec2 local = (v_coords - uv_rect.xy) / uv_rect.zw;
+    vec2 px = local * px_size;
     vec2 half_size = px_size * 0.5;
     float d = sdf_round_box(px - half_size, half_size, radius);
     float coverage = clamp(0.5 - d, 0.0, 1.0);
@@ -187,7 +189,7 @@ void main() {
     c = c * (1.0 - tint_color.a) + tint_color.rgb;
     c += vec3(dither(gl_FragCoord.xy));
     // Inner hairline along the top edge.
-    float edge = clamp(1.0 - abs(d + 1.0), 0.0, 1.0) * smoothstep(0.6, 0.0, v_coords.y);
+    float edge = clamp(1.0 - abs(d + 1.0), 0.0, 1.0) * smoothstep(0.6, 0.0, local.y);
     c += vec3(highlight * edge);
     gl_FragColor = vec4(c, 1.0) * coverage * alpha;
 }
@@ -248,7 +250,6 @@ pub struct Shaders {
     pub shadow: GlesPixelProgram,
     pub wallpaper: GlesPixelProgram,
     pub rounded_surface: GlesTexProgram,
-    #[allow(dead_code)] // glass panels of the shell UI (milestone 5)
     pub glass: GlesTexProgram,
     pub kawase_down: GlesTexProgram,
     pub kawase_up: GlesTexProgram,
@@ -283,7 +284,14 @@ impl Shaders {
             glass: texture(
                 r,
                 GLASS,
-                &[u("px_size", _2f), u("radius", _1f), u("tint_color", _4f), u("saturation", _1f), u("highlight", _1f)],
+                &[
+                    u("px_size", _2f),
+                    u("radius", _1f),
+                    u("tint_color", _4f),
+                    u("saturation", _1f),
+                    u("highlight", _1f),
+                    u("uv_rect", _4f),
+                ],
             )?,
             kawase_down: texture(r, KAWASE_DOWN, &[u("half_pixel", _2f), u("offset", _1f)])?,
             kawase_up: texture(r, KAWASE_UP, &[u("half_pixel", _2f), u("offset", _1f)])?,

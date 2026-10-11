@@ -124,6 +124,7 @@ impl Lumen {
     fn on_window_resized(&mut self, id: u32) {
         let grabbing = self.wm.grab.is_some();
         let work = self.work_area();
+        let morph_params = self.wm.morph_params;
         let Some(w) = self.wm.get_mut(id) else { return };
         let size = w.size();
         if size == w.last_size {
@@ -132,6 +133,10 @@ impl Lumen {
         let old = w.last_size;
         w.last_size = size;
         let requested = w.requested_size == Some(size);
+        if requested && w.pending_morph.is_some() {
+            w.start_morph(morph_params);
+            return;
+        }
         if let Some((anchor, left, top)) = w.resize_anchor {
             let x = if left { anchor.x - size.w as f64 } else { w.target.x };
             let y = if top { anchor.y - size.h as f64 } else { w.target.y };

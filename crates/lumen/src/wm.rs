@@ -32,6 +32,27 @@ pub enum Layout {
     Fullscreen { restore: Rectangle<f64, Logical> },
 }
 
+/// A window stretching from where it was drawn to its new geometry after a
+/// layout change (maximize, tile, restore), GNOME style.
+pub struct Morph {
+    /// Logical, global, without workspace offset.
+    pub from: Rectangle<f64, Logical>,
+    /// The old layout had square corners.
+    pub from_square: bool,
+    /// 0 → 1.
+    pub t: Spring,
+}
+
+/// A layout change waiting for the client's buffer of the new size.
+pub struct PendingMorph {
+    pub from: Rectangle<f64, Logical>,
+    pub from_square: bool,
+    pub waited: Duration,
+}
+
+/// How long to wait for a resized buffer before moving without a morph.
+const MORPH_WAIT: Duration = Duration::from_millis(400);
+
 pub struct Win {
     pub id: u32,
     pub window: Window,
@@ -54,9 +75,26 @@ pub struct Win {
     /// size is the answer to that request (the window is already placed for
     /// it); any other size change was the client's own decision.
     pub requested_size: Option<Size<i32, Logical>>,
+    pub pending_morph: Option<PendingMorph>,
+    pub morph: Option<Morph>,
 }
 
 impl Win {
+    /// Square corners (maximized, fullscreen).
+    pub fn is_square(&self) -> bool {
+        matches!(self.layout, Layout::Maximized { .. } | Layout::Fullscreen { .. })
+    }
+
+    /// The client answered the layout change with a buffer of the new size:
+    /// stretch from the old rectangle to the new one.
+    pub fn start_morph(&mut self, params: SpringParams) {
+        let Some(p) = self.pending_morph.take() else { return };
+        let mut t = Spring::new(0.0, params);
+        t.set_target(1.0);
+        self.morph = Some(Morph { from: p.from, from_square: p.from_square, t });
+        self.pos.snap(self.target.x, self.target.y);
+    }
+
     pub fn surface(&self) -> &WlSurface {
         self.window.toplevel().expect("wayland window").wl_surface()
     }
@@ -136,6 +174,7 @@ pub struct Wm {
     pub grab: Option<Grab>,
     next_id: u32,
     move_params: SpringParams,
+    pub morph_params: SpringParams,
     open_params: SpringParams,
     close_params: SpringParams,
     ws_params: SpringParams,
@@ -154,6 +193,7 @@ impl Wm {
             grab: None,
             next_id: 1,
             move_params: theme.spring(a.window_move, 0.05),
+            morph_params: theme.spring(a.window_move, 0.002),
             open_params: theme.spring(a.window_open, 0.001),
             close_params: theme.spring(a.window_close, 0.002),
             ws_params: theme.spring(a.workspace, 0.0005),
@@ -177,6 +217,8 @@ impl Wm {
             resize_anchor: None,
             last_size: Size::default(),
             requested_size: None,
+            pending_morph: None,
+            morph: None,
         });
         id
     }
@@ -322,6 +364,8 @@ impl Wm {
 
     pub fn set_target(&mut self, id: u32, loc: Point<f64, Logical>, animate: bool) {
         if let Some(w) = self.get_mut(id) {
+            // An explicit position (drags) replaces a pending morph.
+            w.pending_morph = None;
             w.target = loc;
             if animate {
                 w.pos.set_target(loc.x, loc.y);
@@ -395,19 +439,33 @@ impl Wm {
             }
             Layout::Fullscreen { .. } => (output, false, true, None),
         };
+        let size = Size::from((rect.size.w.round() as i32, rect.size.h.round() as i32));
+        let mut morph = false;
         if let Some(w) = self.get_mut(id) {
+            let from_square = w.is_square();
             w.layout = layout;
             w.resize_anchor = None;
+            if w.mapped && size != w.size() {
+                // Stay put until the client has a buffer of the new size, then
+                // stretch from where the window is drawn now.
+                let from = if w.morph.is_some() { w.last_drawn.unwrap_or_else(|| w.geo()) } else { w.geo() };
+                w.pending_morph = Some(PendingMorph { from, from_square, waited: Duration::ZERO });
+                w.target = rect.loc;
+                morph = true;
+            }
         }
-        let size = Size::from((rect.size.w.round() as i32, rect.size.h.round() as i32));
         self.configure(id, Some(size), max, full, tile);
-        self.set_target(id, rect.loc, true);
+        if !morph {
+            self.set_target(id, rect.loc, true);
+        }
     }
 
     pub fn any_animating(&self) -> bool {
         !self.ws_anim.is_settled()
             || !self.closing.is_empty()
-            || self.windows.iter().any(|w| w.mapped && (!w.pos.is_settled() || !w.open.is_settled()))
+            || self.windows.iter().any(|w| {
+                w.mapped && (!w.pos.is_settled() || !w.open.is_settled() || w.pending_morph.is_some() || w.morph.is_some())
+            })
     }
 
     pub fn advance(&mut self, dt: Duration) {
@@ -415,6 +473,20 @@ impl Wm {
         for w in &mut self.windows {
             w.pos.step(dt);
             w.open.step(dt);
+            if let Some(p) = &mut w.pending_morph {
+                p.waited += dt;
+                if p.waited > MORPH_WAIT {
+                    // The client did not resize (in time): just move.
+                    w.pending_morph = None;
+                    w.pos.set_target(w.target.x, w.target.y);
+                }
+            }
+            if let Some(m) = &mut w.morph {
+                m.t.step(dt);
+                if m.t.is_settled() {
+                    w.morph = None;
+                }
+            }
         }
         for c in &mut self.closing {
             c.progress.step(dt);

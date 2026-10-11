@@ -100,6 +100,32 @@ impl Ui<'_, '_, '_> {
         self.elements.push(LumenElement::Shape(s.clone()));
     }
 
+    /// A frosted-glass pane: what is behind it blurred and tinted (or just
+    /// the tint with blur disabled), with an optional hairline border.
+    #[allow(clippy::too_many_arguments)]
+    fn glass(&mut self, key: &'static str, i: u64, r: Rect, radius: f64, tint: Color, border: Option<(Color, f64)>, alpha: f32) {
+        if alpha <= 0.0 {
+            return;
+        }
+        let blur = self.ctx.theme.blur.enabled;
+        let fill = if blur { tint.with_alpha(0.0) } else { tint };
+        // The shape carries the border (and the tint without blur); it must
+        // exist even without a border so the glass has a place in the list.
+        let border = border.or(Some((tint.with_alpha(0.0), 0.0)));
+        self.rect(key, i, r, radius, fill, border, alpha);
+        if blur {
+            let rect = self.phys(r);
+            self.ctx.rs.glass_requests.push(crate::render::glass::GlassRequest {
+                index: self.elements.len() - 1,
+                rect,
+                radius: (radius * self.scale) as f32,
+                tint,
+                alpha,
+                key: (key, i),
+            });
+        }
+    }
+
     /// Text with its layout box's top-left at `at`; returns the box (logical).
     fn text(&mut self, text: &str, style: &Style, at: Point<f64, Logical>, max_w: Option<f64>, lines: Option<usize>, alpha: f32) -> Rect {
         let p = Point::<f64, Physical>::from(((at.x - self.out.loc.x) * self.scale, (at.y - self.out.loc.y) * self.scale));
@@ -219,7 +245,7 @@ fn panel(ui: &mut Ui) {
 
     // The bar itself fades out in the overview, leaving its content floating.
     let bar = layout::rect(out.loc.x, out.loc.y, out.size.w, h);
-    ui.rect("panel", 0, bar, 0.0, theme.colors.panel, None, 1.0 - overview * 0.85);
+    ui.glass("panel", 0, bar, 0.0, theme.colors.panel, None, 1.0 - overview * 0.85);
 }
 
 fn dock(ui: &mut Ui) {
@@ -277,7 +303,7 @@ fn dock(ui: &mut Ui) {
     ui.hit(apps_cell, Hit::DockApps);
     ui.icon("app-grid", apps_cell, alpha, "");
     ui.hit(dock, Hit::Dock);
-    ui.rect("dock-bg", 0, dock, theme.geometry.dock_radius, theme.colors.glass_tint, Some((theme.colors.border, 1.0)), alpha);
+    ui.glass("dock-bg", 0, dock, theme.geometry.dock_radius, theme.colors.glass_tint, Some((theme.colors.border, 1.0)), alpha);
     ui.ctx.shell.shapes.retain(|k, i| !(k == "dock-dot" || k == "dock-hover") || (i as usize) < n.max(1));
 }
 
@@ -319,7 +345,7 @@ fn popover(ui: &mut Ui) {
     }
     let m = shift(menu);
     ui.hit(m, Hit::Popover);
-    ui.rect("pop-bg", 0, m, theme.geometry.popover_radius, theme.colors.surface, Some((theme.colors.border, 1.0)), alpha);
+    ui.glass("pop-bg", 0, m, theme.geometry.popover_radius, theme.colors.glass_surface, Some((theme.colors.border, 1.0)), alpha);
 }
 
 fn notifications(ui: &mut Ui) {
@@ -355,7 +381,7 @@ fn notifications(ui: &mut Ui) {
         if !body.is_empty() {
             ui.text(&body, &body_style, Point::from((tx, card.loc.y + g * 2.5 + title_h)), Some(text_w), Some(3), alpha);
         }
-        ui.rect("notif", id, card, theme.geometry.popover_radius, theme.colors.surface, Some((theme.colors.border, 1.0)), alpha);
+        ui.glass("notif", id, card, theme.geometry.popover_radius, theme.colors.glass_surface, Some((theme.colors.border, 1.0)), alpha);
         y += (h + g) * t.min(1.0);
     }
     let alive: Vec<u64> = ui.ctx.shell.notifications.iter().map(|n| n.id).collect();
@@ -424,7 +450,7 @@ fn switcher(ui: &mut Ui) {
     let tail: Vec<LumenElement> = ui.elements.drain(pos..).collect();
     ui.elements.extend(thumb_elems);
     ui.elements.extend(tail);
-    ui.rect("sw-bg", 0, bg, theme.geometry.popover_radius, theme.colors.surface, Some((theme.colors.border, 1.0)), appear);
+    ui.glass("sw-bg", 0, bg, theme.geometry.popover_radius, theme.colors.glass_surface, Some((theme.colors.border, 1.0)), appear);
 }
 
 /// Overview chrome: search entry, app tiles (search results or the app grid),

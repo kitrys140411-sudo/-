@@ -55,13 +55,13 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 ## M5 — Desktop shell (in compositor)
 - [x] Theme file (`theme.toml`): colors, radii, shadows, blur, timings, spacing grid (done in M4)
 - [x] Custom GLES effects: rounded corners, soft shadows, dual-Kawase blur (done in M4)
-- [ ] Glass surfaces (blurred backdrop) for panel/dock/popovers/switcher
-- [ ] Text rendering for UI (Inter), gamma-correct
-- [ ] Top panel (Activities, clock, status), Overview (window grid + search + app launch), workspaces with animated switching
-- [ ] Alt+Tab switcher, notifications (IPC + toasts), dock
-- [ ] Desktop entries (`.desktop` parsing) for the app list
-- [ ] Own vector icons and cursor set (rasterized with FreeType's outline renderer)
-- [ ] Animated maximize/tile (geometry morph), glass backdrop for dock/popovers
+- [x] Glass surfaces (blurred backdrop) for panel/dock/popovers/switcher
+- [x] Text rendering for UI (Inter), gamma-correct
+- [x] Top panel (Activities, clock, status), Overview (window grid + search + app launch), workspaces with animated switching
+- [x] Alt+Tab switcher, notifications (IPC + toasts), dock
+- [x] Desktop entries (`.desktop` parsing) for the app list
+- [x] Own vector icons and cursor set (rasterized with FreeType's outline renderer)
+- [x] Animated maximize/tile (geometry morph), glass backdrop for dock/popovers
 
 ## M6 — Terminal (`lumen-term`)
 - [ ] PTY, vte-based parser, xterm-compatible state machine (truecolor, 256, alt screen, scroll regions, modes, mouse 1000/1002/1003/1006, bracketed paste, focus, OSC 0/2/4/8/10/11/52, DA/DSR)
