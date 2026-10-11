@@ -2,3 +2,4 @@
 /target/
 /boot/target/
 *.swp
+__pycache__/

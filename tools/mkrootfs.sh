@@ -39,7 +39,7 @@ for bin in lumenctl; do
     [ -f "$TARGET/$bin" ] && install -m 0755 "$TARGET/$bin" "$ROOTFS/usr/bin/$bin"
 done
 [ -f "$STATIC/lsh" ] && install -m 0755 "$STATIC/lsh" "$ROOTFS/bin/lsh"
-for bin in lumen lumen-term; do
+for bin in lumen lumen-term lumen-testclient; do
     [ -f "$TARGET/$bin" ] && install -m 0755 "$TARGET/$bin" "$ROOTFS/usr/bin/$bin"
 done
 

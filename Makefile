@@ -6,15 +6,16 @@
 #
 #   make image   - build build/out/lumen.img (GPT: ESP + ext4 root)
 #   make run     - boot the image in QEMU (OVMF, virtio-gpu); VIRGL=1 for virgl
-#   make test    - unit tests (in container) + QEMU integration tests (QMP)
+#   make test    - unit tests and headless compositor tests (in container) +
+#                  QEMU integration tests (QMP); TESTS=word filters tests
 #   make shell   - interactive shell in the build container
 
-BUILD_IMAGE ?= lumen-build:3
+BUILD_IMAGE ?= lumen-build:4
 DOCKER      ?= docker
 CONTAINER   := DOCKER=$(DOCKER) tools/docker/run.sh $(BUILD_IMAGE)
 STAMP       := build/.toolchain-$(subst :,-,$(BUILD_IMAGE))
 
-.PHONY: all image run test unit-test qemu-test toolchain shell clean distclean
+.PHONY: all image run test unit-test compositor-test qemu-test toolchain shell clean distclean
 
 all: image
 
@@ -31,10 +32,14 @@ image: $(STAMP)
 run: image
 	python3 tools/qemu.py run $(if $(VIRGL),--virgl) $(if $(HEADLESS),--headless)
 
-test: unit-test qemu-test
+test: unit-test compositor-test qemu-test
 
 unit-test: $(STAMP)
 	$(CONTAINER) make -f tools/build.mk unit-test
+
+# The compositor against real Wayland clients, rendering offscreen (llvmpipe).
+compositor-test: $(STAMP)
+	$(CONTAINER) sh -c 'make -f tools/build.mk userspace && python3 tools/ctest.py $(TESTS)'
 
 qemu-test: image
 	python3 tools/test.py $(TESTS)

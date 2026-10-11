@@ -43,20 +43,25 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 - [x] Tests: parser unit tests + POSIX scenario tests (compared against expected output), job control test through a PTY
 
 ## M4 — Compositor (`lumen`, smithay)
-- [ ] udev/DRM/KMS backend: GBM + EGL + GLES, page flip on vblank, frame scheduling, libseat session, libinput
-- [ ] winit backend (dev), headless offscreen backend (tests, profiling, screenshots on host)
-- [ ] Damage tracking (OutputDamageTracker), only damaged regions re-rendered
-- [ ] Protocols: xdg-shell, xdg-decoration, data-device (clipboard) + primary selection, fractional-scale, viewporter, cursor-shape, presentation-time, linux-dmabuf, xdg-activation, single-pixel-buffer
-- [ ] Spring-based window animations (open/close/move/maximize), time-based
-- [ ] Keyboard (xkbcommon), pointer, focus, move/resize, keybindings
+- [x] udev/DRM/KMS backend: GBM + EGL + GLES, page flip on vblank, frame scheduling, libseat session, libinput
+- [x] winit backend (dev), headless offscreen backend (tests, profiling, screenshots)
+- [x] Damage tracking (OutputDamageTracker / DrmCompositor), only damaged regions re-rendered
+- [x] Protocols: xdg-shell, xdg-decoration, data-device (clipboard) + primary selection, fractional-scale, viewporter, cursor-shape, presentation-time, linux-dmabuf, xdg-activation, single-pixel-buffer
+- [x] Spring-based window animations (open/close/move/maximize/workspaces/overview), time-based
+- [x] Keyboard (xkbcommon), pointer, focus, move/resize, keybindings
+- [x] Control socket (screenshots, state, stats, synthetic input), `lumenctl desktop`
+- [x] Tests: 19 headless client tests (`make compositor-test`), 4 QEMU DRM tests
 
 ## M5 — Desktop shell (in compositor)
-- [ ] Theme file (`theme.toml`): colors, radii, shadows, blur, timings, spacing grid
-- [ ] Custom GLES effects: rounded corners, soft shadows, dual-Kawase blur (glass)
+- [x] Theme file (`theme.toml`): colors, radii, shadows, blur, timings, spacing grid (done in M4)
+- [x] Custom GLES effects: rounded corners, soft shadows, dual-Kawase blur (done in M4)
+- [ ] Glass surfaces (blurred backdrop) for panel/dock/popovers/switcher
 - [ ] Text rendering for UI (Inter), gamma-correct
 - [ ] Top panel (Activities, clock, status), Overview (window grid + search + app launch), workspaces with animated switching
 - [ ] Alt+Tab switcher, notifications (IPC + toasts), dock
 - [ ] Desktop entries (`.desktop` parsing) for the app list
+- [ ] Own vector icons and cursor set (rasterized with FreeType's outline renderer)
+- [ ] Animated maximize/tile (geometry morph), glass backdrop for dock/popovers
 
 ## M6 — Terminal (`lumen-term`)
 - [ ] PTY, vte-based parser, xterm-compatible state machine (truecolor, 256, alt screen, scroll regions, modes, mouse 1000/1002/1003/1006, bracketed paste, focus, OSC 0/2/4/8/10/11/52, DA/DSR)

@@ -1,0 +1,272 @@
+//! Global compositor state.
+
+use std::ffi::OsString;
+use std::sync::Arc;
+use std::time::Duration;
+
+use smithay::desktop::PopupManager;
+use smithay::input::keyboard::{Keysym, XkbConfig};
+use smithay::input::pointer::CursorImageStatus;
+use smithay::input::{Seat, SeatState};
+use smithay::output::Output;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction};
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::{Display, DisplayHandle};
+use smithay::utils::{Clock, Logical, Monotonic, Point};
+use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::presentation::PresentationState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shm::ShmState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
+
+use crate::backend::Backend;
+use crate::cursor::CursorTheme;
+use crate::render::RenderState;
+use crate::shell::Shell;
+use crate::theme::Theme;
+use crate::wm::Wm;
+
+#[derive(Default)]
+pub struct ClientState {
+    pub compositor_state: CompositorClientState,
+}
+
+impl ClientData for ClientState {
+    fn initialized(&self, _client_id: ClientId) {}
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+/// Render timing statistics (frame-time HUD, tests, profiling).
+#[derive(Default, Debug, Clone)]
+pub struct FrameStats {
+    pub frames: u64,
+    /// Rendering CPU time of recent frames (ms), ring buffer.
+    pub render_ms: Vec<f32>,
+    /// Intervals between presented frames during animations (ms).
+    pub interval_ms: Vec<f32>,
+    pub last_present: Option<Duration>,
+    pub missed: u64,
+}
+
+impl FrameStats {
+    pub fn push_render(&mut self, ms: f32) {
+        self.frames += 1;
+        if self.render_ms.len() >= 240 {
+            self.render_ms.remove(0);
+        }
+        self.render_ms.push(ms);
+    }
+
+    /// Record a presentation; `animating` intervals count toward missed frames.
+    pub fn push_present(&mut self, now: Duration, refresh: Duration, animating: bool) {
+        if let Some(last) = self.last_present {
+            let dt = now.saturating_sub(last);
+            if animating {
+                if self.interval_ms.len() >= 240 {
+                    self.interval_ms.remove(0);
+                }
+                self.interval_ms.push(dt.as_secs_f32() * 1000.0);
+                if dt > refresh + refresh / 2 {
+                    self.missed += (dt.as_secs_f64() / refresh.as_secs_f64()).round() as u64 - 1;
+                }
+            }
+        }
+        self.last_present = Some(now);
+    }
+}
+
+// Several protocol states are only kept alive here: they own their globals.
+#[allow(dead_code)]
+pub struct Lumen {
+    pub dh: DisplayHandle,
+    pub lh: LoopHandle<'static, Lumen>,
+    pub signal: LoopSignal,
+    pub clock: Clock<Monotonic>,
+    pub socket_name: OsString,
+    pub backend: Backend,
+    pub theme: Theme,
+
+    pub compositor_state: CompositorState,
+    pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
+    pub shm_state: ShmState,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
+    pub seat_state: SeatState<Lumen>,
+    pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub output_manager_state: OutputManagerState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
+    pub presentation_state: PresentationState,
+    pub xdg_activation_state: XdgActivationState,
+    pub cursor_shape_state: CursorShapeManagerState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
+
+    pub seat: Seat<Lumen>,
+    pub popups: PopupManager,
+    pub cursor_status: CursorImageStatus,
+    pub cursor_theme: CursorTheme,
+    pub pointer_pos: Point<f64, Logical>,
+    /// Keys whose release must not reach clients (consumed by shortcuts).
+    pub suppressed_keys: Vec<Keysym>,
+    pub outputs: Vec<Output>,
+
+    pub wm: Wm,
+    pub shell: Shell,
+    pub render: RenderState,
+    pub stats: FrameStats,
+    /// Notify init (READY=1) after the first presented frame.
+    pub ready_notified: bool,
+}
+
+impl Lumen {
+    pub fn new(display: Display<Lumen>, lh: LoopHandle<'static, Lumen>, signal: LoopSignal, backend: Backend) -> Lumen {
+        let dh = display.handle();
+        let clock = Clock::<Monotonic>::new();
+
+        let source = ListeningSocketSource::new_auto().expect("cannot create the Wayland socket");
+        let socket_name = source.socket_name().to_os_string();
+        lh.insert_source(source, |stream, _, state| {
+            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
+                tracing::warn!("cannot add Wayland client: {e}");
+            }
+        })
+        .expect("cannot listen on the Wayland socket");
+        lh.insert_source(Generic::new(display, Interest::READ, Mode::Level), |_, display, state| {
+            // SAFETY: the display is never dropped while the source exists.
+            unsafe { display.get_mut().dispatch_clients(state).expect("dispatching clients failed") };
+            Ok(PostAction::Continue)
+        })
+        .expect("cannot register the Wayland display");
+
+        let compositor_state = CompositorState::new_v6::<Lumen>(&dh);
+        let xdg_shell_state = XdgShellState::new::<Lumen>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Lumen>(&dh);
+        let shm_state = ShmState::new::<Lumen>(&dh, vec![]);
+        let dmabuf_state = DmabufState::new();
+        let mut seat_state = SeatState::new();
+        let data_device_state = DataDeviceState::new::<Lumen>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Lumen>(&dh);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Lumen>(&dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Lumen>(&dh);
+        let viewporter_state = ViewporterState::new::<Lumen>(&dh);
+        let presentation_state = PresentationState::new::<Lumen>(&dh, clock.id() as u32);
+        let xdg_activation_state = XdgActivationState::new::<Lumen>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<Lumen>(&dh);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Lumen>(&dh);
+
+        let mut seat = seat_state.new_wl_seat(&dh, "seat0");
+        seat.add_pointer();
+        let xkb = XkbConfig {
+            layout: &std::env::var("XKB_DEFAULT_LAYOUT").unwrap_or_default(),
+            variant: &std::env::var("XKB_DEFAULT_VARIANT").unwrap_or_default(),
+            options: std::env::var("XKB_DEFAULT_OPTIONS").ok(),
+            ..Default::default()
+        };
+        seat.add_keyboard(xkb, 400, 30).expect("cannot initialize the keyboard (xkbcommon)");
+
+        let theme = Theme::load();
+        let wm = Wm::new(&theme);
+        let shell = Shell::new(&theme);
+
+        Lumen {
+            dh,
+            lh,
+            signal,
+            clock,
+            socket_name,
+            backend,
+            theme,
+            compositor_state,
+            xdg_shell_state,
+            xdg_decoration_state,
+            shm_state,
+            dmabuf_state,
+            dmabuf_global: None,
+            seat_state,
+            data_device_state,
+            primary_selection_state,
+            output_manager_state,
+            fractional_scale_state,
+            viewporter_state,
+            presentation_state,
+            xdg_activation_state,
+            cursor_shape_state,
+            single_pixel_buffer_state,
+            seat,
+            popups: PopupManager::default(),
+            cursor_status: CursorImageStatus::default_named(),
+            cursor_theme: CursorTheme::load(),
+            pointer_pos: (0.0, 0.0).into(),
+            suppressed_keys: Vec::new(),
+            outputs: Vec::new(),
+            wm,
+            shell,
+            render: RenderState::default(),
+            stats: FrameStats::default(),
+            ready_notified: false,
+        }
+    }
+
+    /// Current time on the presentation clock.
+    pub fn now(&self) -> Duration {
+        self.clock.now().into()
+    }
+
+    pub fn primary_output(&self) -> Option<&Output> {
+        self.outputs.first()
+    }
+
+    /// The output changed size or scale: re-apply layouts that depend on it.
+    pub fn on_output_resized(&mut self) {
+        let (work, out) = (self.work_area(), self.output_rect());
+        let ids: Vec<(u32, crate::wm::Layout)> = self.wm.windows.iter().map(|w| (w.id, w.layout)).collect();
+        for (id, layout) in ids {
+            if !matches!(layout, crate::wm::Layout::Floating) {
+                self.wm.set_layout(id, layout, work, out);
+            }
+        }
+        let scale = self.primary_output().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0);
+        for w in &self.wm.windows {
+            w.window.with_surfaces(|surface, states| {
+                let _ = surface;
+                smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale));
+            });
+        }
+        let p = self.pointer_pos;
+        self.pointer_pos = (p.x.clamp(out.loc.x, out.loc.x + out.size.w - 1.0), p.y.clamp(out.loc.y, out.loc.y + out.size.h - 1.0)).into();
+    }
+
+    /// Ask every output to redraw at the next opportunity.
+    pub fn queue_redraw_all(&mut self) {
+        for o in self.outputs.clone() {
+            self.backend.queue_redraw(&o);
+        }
+    }
+
+    /// Tell lumen-init we are ready (first frame on screen).
+    pub fn notify_ready(&mut self) {
+        if self.ready_notified {
+            return;
+        }
+        self.ready_notified = true;
+        if let Ok(path) = std::env::var("LUMEN_NOTIFY_SOCKET") {
+            if let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() {
+                let _ = sock.send_to(b"READY=1\nSTATUS=first frame presented", path);
+            }
+        }
+        tracing::info!("first frame presented");
+    }
+}

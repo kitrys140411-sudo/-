@@ -140,13 +140,20 @@ class Machine:
             "qemu-system-x86_64",
             "-machine", "q35",
             "-accel", "kvm" if kvm else "tcg,thread=multi",
-            "-cpu", "host" if kvm else "max",
+            # TCG in QEMU 8.2 mis-emulates AVX2 gathers, which Mesa's llvmpipe
+            # JIT uses for texture sampling (the compositor crashed in an
+            # llvmpipe thread); without AVX2 llvmpipe uses SSE code paths.
+            "-cpu", "host" if kvm else os.environ.get("LUMEN_QEMU_CPU", "max,avx2=off,avx512f=off"),
             "-m", self.memory, "-smp", str(self.smp),
             "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
             "-drive", f"if=pflash,format=raw,unit=1,file={vars_}",
             "-drive", f"if=virtio,format=raw,file={self.image}" + (",snapshot=on" if self.snapshot else ""),
             "-device", "virtio-keyboard-pci",
-            "-device", "virtio-tablet-pci",
+            # USB tablet rather than virtio-tablet: virtio-tablet reports
+            # BTN_TOUCH, and without udevd's input_id rules (libudev-zero) it is
+            # classified as a touchscreen, so plain pointer motion is ignored.
+            "-device", "qemu-xhci,id=xhci",
+            "-device", "usb-tablet,bus=xhci.0",
             "-device", "virtio-rng-pci",
             "-nic", "none",
             "-vga", "none",

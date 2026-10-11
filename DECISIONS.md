@@ -103,3 +103,66 @@ Each entry: what was chosen and why. Newest at the bottom of each section.
 - Line editor redraws the whole (wrapped) line on change, but coalesces redraws while
   input is queued; consecutive kills accumulate (readline semantics).
 - `lsh` is linked statically (it is also the rescue shell inside the initramfs).
+
+## Compositor (M4)
+
+- **smithay 0.7.0** (crates.io release, pure-Rust Wayland server, no `use_system_lib`),
+  with its DRM/GBM/EGL/libinput/libseat/udev/winit backends and the GLES renderer.
+  Every API used was checked against the 0.7.0 sources, not memory.
+- **Own window manager instead of `desktop::Space`**: windows live in `Wm` with a
+  target geometry and an animated position (critically damped springs, closed form,
+  so a step of 80 ms equals ten steps of 8 ms — animations are time-based and never
+  depend on the frame rate). Stacking, focus MRU, workspaces, layouts (floating,
+  maximized, tiled, fullscreen) and interactive move/resize grabs are ours.
+- **Rendering**: own scene builder producing smithay render elements front to back,
+  drawn through `OutputDamageTracker` (headless/winit) or `DrmCompositor` (udev), so
+  only damaged regions are redrawn; an idle desktop renders nothing (tested).
+  Custom GLSL: rounded-corner clipping of client surfaces (the inverse of the
+  renderer's texture matrix maps texture coordinates to window geometry, so viewport
+  crops, buffer transforms and y-flips stay exact), analytic soft shadows (erf of a
+  rounded-box SDF), procedural wallpaper, dual-Kawase blur. Shapes (panel, shadows,
+  outlines) are persistent elements with stable ids and sub-pixel positions inside
+  pixel-aligned element rectangles, so moving shapes are smooth and unchanged ones
+  cause no damage.
+- **Frame scheduling (DRM)**: per-output state machine Idle → Queued → render →
+  WaitingForVBlank; after a vblank the next frame starts after an adaptive delay
+  (late in the frame when rendering is fast, immediately when slow). Animations are
+  stepped to the *predicted presentation time* on the vblank grid, so every frame
+  advances motion by exactly one refresh period. Frames without damage wait for an
+  estimated vblank (frame callbacks keep their pace).
+- **Headless backend** (offscreen texture, llvmpipe via EGL device enumeration,
+  simulated 60 Hz vblank) drives the compositor tests in the build container:
+  `tools/ctest.py` runs `lumen-testclient` (sctk shm client with a stdout event
+  protocol) against it, using the control socket for screenshots, window state,
+  frame statistics and synthetic input. The winit backend is tested by running Lumen
+  nested inside headless Lumen.
+- **Control socket** (`$XDG_RUNTIME_DIR/lumen-ipc.sock`, line protocol, one reply
+  line per request); `lumenctl desktop ...` talks to it. Screenshots are encoded by
+  a small own PNG writer (miniz_oxide for deflate).
+- **Clipboard to late data devices**: smithay offers the selection only on keyboard
+  focus changes, so a client that creates its data device after mapping saw an
+  empty clipboard. The data-device and primary-selection managers are dispatched
+  through a wrapper that re-offers the selection to the focused client when it
+  creates a device.
+- **wl_surface.enter / preferred_buffer_scale** are sent by us (smithay leaves them
+  to the compositor): after every repaint each window gets output enter/leave from
+  its overlap with the output, plus preferred integer and fractional scale.
+- **Configure vs. client resize**: the size the compositor last requested is
+  remembered per window; a commit with that size is the answer to our request
+  (placement already done), any other size change is the client's own and the
+  window then grows/shrinks around its center.
+- **Render fences**: when the renderer cannot export a native fence for KMS
+  (`needs_sync()`, e.g. llvmpipe on kms_swrast), the frame's sync point is waited
+  for before queueing it; otherwise a half-rendered buffer is scanned out (seen in
+  QEMU as frozen partially drawn tiles).
+- **Input devices without udevd**: libudev-zero classifies devices from their evdev
+  bits; QEMU's virtio-tablet reports BTN_TOUCH and becomes a touchscreen, so plain
+  pointer motion is dropped by libinput. QEMU runs use `usb-tablet` (xHCI), which is
+  also the path real USB mice take.
+- **QEMU/TCG**: QEMU 8.2's TCG mis-emulates AVX2 gathers that Mesa's llvmpipe JIT
+  emits for texture sampling (SIGSEGV in an llvmpipe thread; the same binaries are
+  fine natively). Tests run TCG guests with `-cpu max,avx2=off,avx512f=off`; KVM
+  guests use `-cpu host`.
+- Client-side decorations everywhere (like GNOME); the compositor only adds rounded
+  corners and shadows. Multiple outputs are placed left to right; the shell UI is
+  drawn on every output, window management uses the primary one.

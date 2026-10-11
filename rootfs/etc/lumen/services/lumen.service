@@ -1,0 +1,12 @@
+# The compositor and desktop shell, running as the desktop user. Device access
+# (DRM, input, VT switching) goes through seatd.
+description = Lumen desktop
+exec        = /usr/bin/lumen --backend udev
+user        = lumen
+after       = seatd
+ready       = notify
+restart     = always
+target      = graphical
+runtime_dir = yes
+env         = LIBSEAT_BACKEND=seatd
+env         = XDG_SESSION_TYPE=wayland

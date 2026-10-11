@@ -1,0 +1,56 @@
+# Lumen desktop theme. Copy to ~/.config/lumen/theme.toml and edit; keys that are
+# left out keep their default. Colors are #rrggbb or #rrggbbaa (sRGB).
+
+[colors]
+accent           = "#7aa2f7"
+background       = "#101014"
+wallpaper_top    = "#1b1d2b"
+wallpaper_bottom = "#0b0b10"
+wallpaper_glow_a = "#5b6fd6"
+wallpaper_glow_b = "#b05bd6"
+panel            = "#0b0b0fd9"
+glass_tint       = "#16161cb3"
+surface          = "#1d1d25f2"
+surface_hover    = "#2a2a36ff"
+border           = "#ffffff1a"
+text             = "#ececf2"
+text_dim         = "#9a9aaa"
+danger           = "#ff7b72"
+shadow           = "#000000"
+overview_dim     = "#00000040"
+
+[geometry]
+grid                 = 8      # spacing unit (logical px); gaps are multiples of it
+window_radius        = 12
+panel_height         = 32
+popover_radius       = 14
+dock_icon_size       = 52
+dock_radius          = 22
+notification_width   = 380
+switcher_icon_size   = 72
+shadow_blur          = 26
+shadow_offset_y      = 8
+shadow_alpha         = 0.38
+shadow_alpha_focused = 0.55
+hot_corner           = true
+
+[blur]
+enabled    = true
+passes     = 3       # dual-Kawase passes
+offset     = 3.0
+saturation = 1.25
+
+[animation]
+speed                   = 1.0   # 0 disables animations
+window_move             = { stiffness = 800, damping = 1.0 }
+window_open             = { stiffness = 520, damping = 0.82 }
+window_close            = { stiffness = 900, damping = 1.0 }
+workspace               = { stiffness = 380, damping = 1.0 }
+overview                = { stiffness = 420, damping = 1.0 }
+popover                 = { stiffness = 700, damping = 0.85 }
+notification_timeout_ms = 5000
+
+[fonts]
+ui        = "Inter"
+ui_size   = 14
+monospace = "JetBrains Mono"

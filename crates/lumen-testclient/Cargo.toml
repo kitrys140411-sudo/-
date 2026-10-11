@@ -1,0 +1,12 @@
+[package]
+name = "lumen-testclient"
+description = "Scriptable Wayland client used by the Lumen compositor tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Default features: calloop integration and xkbcommon keyboard handling.
+# wayland-client, wayland-protocols and calloop are used through sctk's re-exports
+# so their versions always match the ones sctk was built against.
+smithay-client-toolkit = "0.19.2"

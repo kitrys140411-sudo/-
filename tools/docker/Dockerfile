@@ -25,3 +25,8 @@ RUN curl -sSf -o /tmp/rustup-init \
 COPY rust-toolchain.toml /tmp/tc/rust-toolchain.toml
 RUN cd /tmp/tc && rustup toolchain install && rustc --version \
  && rm -rf /tmp/tc && chmod -R a+rwX /opt/cargo /opt/rustup
+
+# Mesa drivers to run the compositor headless (llvmpipe) in tests, and the
+# FreeType/HarfBuzz development files for text rendering in the shell and the
+# terminal. A separate layer keeps the toolchain layers above cached.
+RUN apk add --no-cache mesa-egl mesa-gles mesa-gbm mesa-dri-gallium freetype-dev harfbuzz-dev

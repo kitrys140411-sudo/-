@@ -1,0 +1,19 @@
+[package]
+name = "lumen"
+description = "Lumen Wayland compositor and desktop shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+smithay = { version = "0.7.0", default-features = false, features = [
+    "backend_drm", "backend_gbm", "backend_egl", "backend_libinput", "backend_udev",
+    "backend_session_libseat", "backend_winit", "renderer_gl", "desktop", "wayland_frontend",
+] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+xcursor = "0.3"
+miniz_oxide = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+libc.workspace = true

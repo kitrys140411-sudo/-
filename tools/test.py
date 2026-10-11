@@ -52,6 +52,10 @@ class TestContext:
         if not cond:
             raise TestFailure(msg)
 
+    def log(self, msg):
+        """Informational line in the test output (measurements)."""
+        print(f"         {msg}", flush=True)
+
     def close(self):
         for m in self.machines:
             m.stop()
