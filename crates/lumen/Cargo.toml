@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+lumen-text = { path = "../lumen-text" }
 smithay = { version = "0.7.0", default-features = false, features = [
     "backend_drm", "backend_gbm", "backend_egl", "backend_libinput", "backend_udev",
     "backend_session_libseat", "backend_winit", "renderer_gl", "desktop", "wayland_frontend",

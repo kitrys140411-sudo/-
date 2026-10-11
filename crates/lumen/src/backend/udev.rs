@@ -54,6 +54,8 @@ enum Redraw {
 
 struct Surface {
     output: Output,
+    /// The wl_output global (removed when the connector goes away).
+    global: smithay::reexports::wayland_server::backend::GlobalId,
     out: Out,
     redraw: Redraw,
     refresh: Duration,
@@ -346,13 +348,14 @@ fn scan_connectors(state: &mut Lumen) {
         );
         match out {
             Ok(out) => {
-                output.create_global::<Lumen>(&state.dh);
+                let global = output.create_global::<Lumen>(&state.dh);
                 let refresh = Duration::from_secs_f64(1000.0 / wl_mode.refresh.max(1) as f64);
                 tracing::info!("output {name}: {}x{}@{:.2} scale {scale}", mode.size().0, mode.size().1, wl_mode.refresh as f64 / 1000.0);
                 dev.surfaces.insert(
                     crtc,
                     Surface {
                         output: output.clone(),
+                        global,
                         out,
                         redraw: Redraw::Idle,
                         refresh,
@@ -378,11 +381,26 @@ fn scan_connectors(state: &mut Lumen) {
         .filter(|(_, s)| !s.out.with_compositor(|c| c.surface().current_connectors().into_iter().any(|c| connected.contains(&c))))
         .map(|(c, _)| *c)
         .collect();
+    let mut removed = Vec::new();
     for crtc in gone {
         if let Some(s) = dev.surfaces.remove(&crtc) {
-            state.outputs.retain(|o| o != &s.output);
+            removed.push((s.output, s.global));
         }
     }
+    for (output, global) in removed {
+        tracing::info!("output {} disconnected", output.name());
+        state.outputs.retain(|o| o != &output);
+        for w in &state.wm.windows {
+            smithay::desktop::space::SpaceElement::output_leave(&w.window, &output);
+        }
+        // Disable first so clients stop binding it, remove a bit later.
+        state.dh.disable_global::<Lumen>(global.clone());
+        let _ = state.lh.insert_source(Timer::from_duration(Duration::from_secs(5)), move |_, _, state| {
+            state.dh.remove_global::<Lumen>(global.clone());
+            TimeoutAction::Drop
+        });
+    }
+    state.on_output_resized();
     state.queue_redraw_all();
 }
 

@@ -1,9 +1,13 @@
 //! Lumen: Wayland compositor with a built-in desktop shell.
+#![cfg_attr(test, allow(dead_code))]
 
 mod anim;
+mod apps;
 mod backend;
 mod cursor;
+mod cursor_art;
 mod handlers;
+mod icons;
 mod input;
 mod ipc;
 mod png;
@@ -11,7 +15,9 @@ mod render;
 mod selection;
 mod shell;
 mod state;
+mod text;
 mod theme;
+mod vector;
 mod wm;
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
@@ -149,6 +155,7 @@ fn run(args: Args, sigfd: OwnedFd) -> Result<(), String> {
     }
     tracing::info!(backend = state.backend.name(), socket = ?state.socket_name, "compositor running");
 
+    state.start_clock();
     let ipc_path = ipc::init(&mut state)?;
     tracing::info!("control socket at {}", ipc_path.display());
 

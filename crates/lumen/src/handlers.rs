@@ -1,7 +1,10 @@
 //! Wayland protocol handlers.
 
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
-use smithay::desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupKeyboardGrab, PopupPointerGrab, PopupUngrabStrategy, Window};
+use smithay::desktop::{
+    find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
+    Window,
+};
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData, Focus};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -9,6 +12,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
 use smithay::utils::{Rectangle, Serial};
@@ -85,11 +89,7 @@ impl Lumen {
         win.window.on_commit();
         let Some(toplevel) = win.window.toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
-            // Let the client choose its size, but tell it which edges are free.
-            toplevel.with_pending_state(|s| {
-                s.capabilities.set(xdg_toplevel::WmCapabilities::Maximize);
-                s.capabilities.set(xdg_toplevel::WmCapabilities::Fullscreen);
-            });
+            // Let the client choose its size (capabilities: the shell's defaults).
             toplevel.send_configure();
             return;
         }
@@ -102,6 +102,7 @@ impl Lumen {
             let work = self.work_area();
             self.wm.map(id, work);
             self.focus_window(Some(id));
+            self.refresh_pointer_focus();
             tracing::info!(id, title = %self.wm.get(id).map(|w| w.title()).unwrap_or_default(), "window mapped");
         } else if mapped && !has_buffer {
             self.close_animation(id);
@@ -113,6 +114,7 @@ impl Lumen {
                 let next = self.wm.top_on_current();
                 self.focus_window(next);
             }
+            self.refresh_pointer_focus();
         } else if mapped {
             self.on_window_resized(id);
         }
@@ -135,6 +137,11 @@ impl Lumen {
             let y = if top { anchor.y - size.h as f64 } else { w.target.y };
             w.target = (x, y).into();
             w.pos.snap(x, y);
+            // After the grab, the anchor stays until the last size asked for
+            // has been committed.
+            if !grabbing && (requested || w.requested_size.is_none()) {
+                w.resize_anchor = None;
+            }
         } else if matches!(w.layout, Layout::Floating) && old.w > 0 && !grabbing && !requested {
             // Client-initiated resize (e.g. font change): keep the window centered
             // on where it was so it grows symmetrically.
@@ -170,7 +177,22 @@ impl Lumen {
         if let Some(id) = id {
             self.wm.raise(id);
         }
+        let previous = self.wm.focused;
         let changed = self.wm.set_focused(id);
+        if changed {
+            // Popups (menus) of the window losing focus close, and their
+            // keyboard grab ends before focus moves on.
+            if let Some(old) = previous.and_then(|p| self.wm.get(p)).map(|w| w.surface().clone()) {
+                for (popup, _) in PopupManager::popups_for_surface(&old) {
+                    let _ = PopupManager::dismiss_popup(&old, &popup);
+                }
+            }
+            if let Some(kb) = self.seat.get_keyboard() {
+                if kb.is_grabbed() {
+                    kb.unset_grab(self);
+                }
+            }
+        }
         for w in &self.wm.windows {
             let active = Some(w.id) == id;
             if w.window.set_activated(active) {
@@ -190,6 +212,7 @@ impl Lumen {
             }
         }
         if changed {
+            self.refresh_pointer_focus();
             self.queue_redraw_all();
         }
     }
@@ -272,6 +295,12 @@ impl XdgShellHandler for Lumen {
         let seat = self.seat.clone();
         let kind = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&kind) else { return };
+        // Only the focused window may grab input for its popups.
+        let focused = self.wm.focused.and_then(|id| self.wm.get(id)).map(|w| w.surface().clone());
+        if focused.as_ref() != Some(&root) {
+            let _ = PopupManager::dismiss_popup(&root, &kind);
+            return;
+        }
         let Ok(mut grab) = self.popups.grab_popup::<Lumen>(root, kind, &seat, serial) else { return };
         if let Some(kb) = seat.get_keyboard() {
             if kb.is_grabbed() && !(kb.has_grab(serial) || kb.has_grab(grab.previous_serial().unwrap_or(serial))) {
@@ -295,7 +324,9 @@ impl XdgShellHandler for Lumen {
             let (work, out) = (self.work_area(), self.output_rect());
             self.wm.set_layout(id, Layout::Maximized { restore: work }, work, out);
             self.queue_redraw_all();
-        } else if surface.is_initial_configure_sent() {
+        }
+        // The protocol wants a configure in reply even if nothing changed.
+        if surface.is_initial_configure_sent() {
             surface.send_configure();
         }
     }
@@ -306,6 +337,9 @@ impl XdgShellHandler for Lumen {
             self.wm.set_layout(id, Layout::Floating, work, out);
             self.queue_redraw_all();
         }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
@@ -313,6 +347,9 @@ impl XdgShellHandler for Lumen {
             let (work, out) = (self.work_area(), self.output_rect());
             self.wm.set_layout(id, Layout::Fullscreen { restore: work }, work, out);
             self.queue_redraw_all();
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
         }
     }
 
@@ -331,6 +368,7 @@ impl XdgShellHandler for Lumen {
             let next = self.wm.mru.iter().copied().find(|i| self.wm.get(*i).is_some_and(|w| w.mapped && w.ws == self.wm.current));
             self.focus_window(next);
         }
+        self.refresh_pointer_focus();
         self.shell.on_windows_changed();
         self.queue_redraw_all();
     }
@@ -356,7 +394,7 @@ impl Lumen {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
         let Some(id) = self.wm.find_toplevel(&root) else { return };
         let Some(w) = self.wm.get(id) else { return };
-        let out = self.output_rect();
+        let out = self.window_output(id).map(|o| crate::render::output_logical_rect(&o)).unwrap_or_else(|| self.output_rect());
         // Target rectangle in the coordinate space of the popup's parent surface.
         let window_loc = w.target - w.window.geometry().loc.to_f64();
         let mut target = out.to_i32_round();
@@ -377,8 +415,9 @@ impl XdgDecorationHandler for Lumen {
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
         toplevel.with_pending_state(|s| s.decoration_mode = Some(DecorationMode::ClientSide));
+        // Always answer, even when the mode stays the same.
         if toplevel.is_initial_configure_sent() {
-            toplevel.send_pending_configure();
+            toplevel.send_configure();
         }
     }
 
@@ -418,7 +457,17 @@ impl DataDeviceHandler for Lumen {
     }
 }
 
-impl ClientDndGrabHandler for Lumen {}
+impl ClientDndGrabHandler for Lumen {
+    fn started(&mut self, _source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.dnd_icon = icon;
+        self.queue_redraw_all();
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.dnd_icon = None;
+        self.queue_redraw_all();
+    }
+}
 impl ServerDndGrabHandler for Lumen {}
 
 impl PrimarySelectionHandler for Lumen {
@@ -447,12 +496,22 @@ impl XdgActivationHandler for Lumen {
     }
 
     fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
-        // Only grant tokens requested while the requesting client had focus.
+        // Only grant tokens to the client with keyboard focus, for an input
+        // event it received since getting focus.
         let Some((serial, _seat)) = data.serial else { return false };
-        self.seat.get_keyboard().and_then(|k| k.last_enter()).is_some_and(|last| serial.is_no_older_than(&last))
+        let Some(kb) = self.seat.get_keyboard() else { return false };
+        let focused_client = kb.current_focus().and_then(|s| self.dh.get_client(s.id()).ok());
+        let requester = data.client_id.clone();
+        if focused_client.map(|c| c.id()) != requester {
+            return false;
+        }
+        kb.last_enter().is_some_and(|last| serial.is_no_older_than(&last))
     }
 
-    fn request_activation(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
+    fn request_activation(&mut self, token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
+        // Tokens are single use and expire.
+        self.xdg_activation_state.remove_token(&token);
+        self.xdg_activation_state.retain_tokens(|_, d| d.timestamp.elapsed().as_secs() <= 10);
         if data.timestamp.elapsed().as_secs() > 10 {
             return;
         }

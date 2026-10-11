@@ -29,4 +29,4 @@ RUN cd /tmp/tc && rustup toolchain install && rustc --version \
 # Mesa drivers to run the compositor headless (llvmpipe) in tests, and the
 # FreeType/HarfBuzz development files for text rendering in the shell and the
 # terminal. A separate layer keeps the toolchain layers above cached.
-RUN apk add --no-cache mesa-egl mesa-gles mesa-gbm mesa-dri-gallium freetype-dev harfbuzz-dev
+RUN apk add --no-cache mesa-egl mesa-gles mesa-gbm mesa-dri-gallium freetype-dev harfbuzz-dev font-noto-emoji

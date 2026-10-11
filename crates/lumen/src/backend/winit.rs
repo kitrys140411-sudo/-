@@ -69,11 +69,14 @@ pub fn init(state: &mut Lumen) -> Result<(), String> {
                 let Backend::Winit(d) = &mut state.backend else { return };
                 let scale = output_scale(&d.backend);
                 let mode = Mode { size, refresh: 60_000 };
+                // Only the window's current size is a valid mode.
+                if let Some(old) = d.output.current_mode() {
+                    d.output.delete_mode(old);
+                }
                 d.output.change_current_state(Some(mode), None, Some(Scale::Fractional(scale)), None);
                 d.output.set_preferred(mode);
                 d.full_redraw = 2;
-                state.render.wallpaper = None;
-                state.render.wallpaper_blurred = None;
+                state.render.wallpapers.clear();
                 state.render.blur.clear();
                 state.on_output_resized();
                 state.queue_redraw_all();

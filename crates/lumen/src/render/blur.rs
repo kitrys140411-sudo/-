@@ -23,7 +23,7 @@ impl BlurCache {
         if let Some(t) = self.textures.get(&key) {
             return Ok(t.clone());
         }
-        let t: GlesTexture = r.create_buffer(Fourcc::Abgr8888, size.to_logical(1).to_buffer(1, Transform::Normal))?;
+        let t = new_target(r, size)?;
         self.textures.insert(key, t.clone());
         Ok(t)
     }
@@ -105,7 +105,24 @@ pub fn blur_into(
     Ok(())
 }
 
-/// Allocate a texture suitable as a blur destination.
+/// Allocate an offscreen texture (blur targets, wallpaper, snapshots) that
+/// samples with clamped edges.
 pub fn new_target(r: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<GlesTexture, GlesError> {
-    r.create_buffer(Fourcc::Abgr8888, size.to_logical(1).to_buffer(1, Transform::Normal))
+    let t: GlesTexture = r.create_buffer(Fourcc::Abgr8888, size.to_logical(1).to_buffer(1, Transform::Normal))?;
+    clamp_to_edge(r, &t);
+    Ok(t)
+}
+
+/// Offscreen textures keep GL's default REPEAT wrapping (smithay sets
+/// CLAMP_TO_EDGE only on imported textures); blur taps and bilinear edge
+/// samples would then wrap around to the opposite edge.
+pub fn clamp_to_edge(r: &mut GlesRenderer, t: &GlesTexture) {
+    use smithay::backend::renderer::gles::ffi;
+    let id = t.tex_id();
+    let _ = r.with_context(|gl| unsafe {
+        gl.BindTexture(ffi::TEXTURE_2D, id);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+        gl.BindTexture(ffi::TEXTURE_2D, 0);
+    });
 }

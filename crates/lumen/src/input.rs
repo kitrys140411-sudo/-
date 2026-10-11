@@ -6,6 +6,7 @@ use smithay::backend::input::{
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 
 use crate::state::Lumen;
@@ -294,12 +295,12 @@ impl Lumen {
             self.shell_toggle_overview(false);
         }
 
-        let out = self.output_rect();
-        let under = if self.shell.pointer_motion(&self.wm, &self.theme, pos, out) {
+        let under = if self.shell_pointer_motion(pos) {
             None
         } else {
             self.wm.surface_under(pos).map(|(_, s, loc)| (s, loc))
         };
+        self.note_pointer_target(&under);
         pointer.motion(self, under.clone(), &MotionEvent { location: pos, serial, time });
         if let Some((delta, delta_unaccel, utime)) = relative {
             pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel, utime });
@@ -308,8 +309,39 @@ impl Lumen {
         self.queue_redraw_all();
     }
 
+    /// Re-evaluate what is under the unmoved pointer (windows moved, mapped,
+    /// closed or restacked, a workspace switched), so enter/leave and the
+    /// cursor follow without waiting for the next motion.
+    pub fn refresh_pointer_focus(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        if pointer.is_grabbed() || self.wm.grab.is_some() {
+            return;
+        }
+        let pos = self.pointer_pos;
+        let under = if self.shell_pointer_motion(pos) { None } else { self.wm.surface_under(pos).map(|(_, s, loc)| (s, loc)) };
+        if under == self.pointer_target {
+            return;
+        }
+        self.note_pointer_target(&under);
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.now().as_millis() as u32;
+        pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
+        pointer.frame(self);
+    }
+
+    /// Track the pointer's target; leaving client surfaces for the shell or
+    /// the desktop restores the default cursor (clients only set theirs on enter).
+    fn note_pointer_target(&mut self, under: &Option<(WlSurface, Point<f64, Logical>)>) {
+        let left_client = self.pointer_target.is_some() && under.is_none();
+        self.pointer_target = under.clone();
+        if left_client && self.wm.grab.is_none() {
+            self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        }
+    }
+
     pub fn handle_button(&mut self, button: u32, state: ButtonState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
+        self.refresh_pointer_focus();
         let Some(pointer) = self.seat.get_pointer() else { return };
         let pressed = state == ButtonState::Pressed;
 
@@ -356,6 +388,7 @@ impl Lumen {
             self.queue_redraw_all();
             return;
         }
+        self.refresh_pointer_focus();
         let mut frame = AxisFrame::new(evt.time_msec()).source(evt.source());
         if h != 0.0 {
             frame = frame.relative_direction(Axis::Horizontal, evt.relative_direction(Axis::Horizontal)).value(Axis::Horizontal, h);

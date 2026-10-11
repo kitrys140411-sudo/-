@@ -79,8 +79,14 @@ impl Lumen {
         self.shell.last_anim_time = target;
         // Large gaps (idle) must not make springs jump: they were settled anyway.
         let dt = dt.min(Duration::from_millis(100));
+        let moving = self.wm.any_animating();
         self.wm.advance(dt);
-        self.shell.advance(dt, target, &self.theme);
+        let out = self.output_rect();
+        self.shell.advance(dt, target, &self.wm, &self.theme, out);
+        if moving {
+            // Windows slide under a resting pointer.
+            self.refresh_pointer_focus();
+        }
     }
 
     pub fn animating(&self) -> bool {
@@ -89,7 +95,7 @@ impl Lumen {
 
     fn cursor_animating(&self) -> bool {
         if let smithay::input::pointer::CursorImageStatus::Named(icon) = &self.cursor_status {
-            return self.cursor_theme.is_animated(icon.name(), 1);
+            return self.cursor_theme.is_animated(icon.name());
         }
         false
     }
@@ -98,9 +104,36 @@ impl Lumen {
     /// scene context, so a frame can be built while the renderer is borrowed.
     pub fn split_for_render(&mut self) -> (&mut Backend, SceneCtx<'_>) {
         let now = self.now();
-        let Lumen { backend, wm, shell, theme, cursor_theme, cursor_status, pointer_pos, render, stats, .. } = self;
-        let ctx = SceneCtx { wm, stats, scale: 1.0, shell, theme, cursor_theme, cursor_status, pointer: *pointer_pos, rs: render, now };
+        let Lumen { backend, wm, shell, theme, cursor_theme, cursor_status, dnd_icon, pointer_pos, render, stats, outputs, .. } = self;
+        let ctx = SceneCtx {
+            wm,
+            stats,
+            scale: 1.0,
+            shell,
+            theme,
+            cursor_theme,
+            cursor_status,
+            dnd_icon: dnd_icon.as_ref(),
+            primary: outputs.first().map(|o| o.name()),
+            pointer: *pointer_pos,
+            rs: render,
+            now,
+        };
         (backend, ctx)
+    }
+
+    /// The output showing most of window `id`: its frame callbacks,
+    /// presentation feedback and preferred scale follow that output.
+    pub fn window_output(&self, id: u32) -> Option<Output> {
+        let r = self.wm.get(id)?.target_geo();
+        let mut best: Option<(f64, &Output)> = None;
+        for o in &self.outputs {
+            let area = crate::render::output_logical_rect(o).intersection(r).map(|i| i.size.w * i.size.h).unwrap_or(0.0);
+            if area > 0.0 && best.is_none_or(|(a, _)| area > a) {
+                best = Some((area, o));
+            }
+        }
+        best.map(|(_, o)| o).or_else(|| self.primary_output()).cloned()
     }
 
     /// After a frame was rendered: frame callbacks, output enter/leave and
@@ -112,8 +145,10 @@ impl Lumen {
         let out_rect = crate::render::output_logical_rect(output).to_i32_round();
         let scale = output.current_scale();
         let transform = output.current_transform();
-        for w in &self.wm.windows {
-            let visible = w.mapped && (w.ws == current || self.wm.ws_visible(w.ws));
+        let homes: Vec<Option<Output>> = self.wm.windows.iter().map(|w| self.window_output(w.id)).collect();
+        for (w, home) in self.wm.windows.iter().zip(homes) {
+            let primary = home.as_ref() == Some(output);
+            let visible = w.mapped && (w.ws == current || self.wm.ws_visible(w.ws)) && primary;
             let out = output.clone();
             w.window.send_frame(output, time, throttle, |_, _| if visible { Some(out.clone()) } else { None });
             // wl_surface.enter/leave follow where the window is on its workspace.
@@ -124,18 +159,21 @@ impl Lumen {
                 Some(mut overlap) => {
                     overlap.loc -= render_loc;
                     w.window.output_enter(output, overlap);
-                    w.window.with_surfaces(|surface, states| {
-                        smithay::wayland::compositor::send_surface_state(surface, states, scale.integer_scale(), transform);
-                        smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {
-                            fs.set_preferred_scale(scale.fractional_scale())
-                        });
-                    });
                 }
                 None => w.window.output_leave(output),
+            }
+            if primary {
+                w.window.with_surfaces(|surface, states| {
+                    smithay::wayland::compositor::send_surface_state(surface, states, scale.integer_scale(), transform);
+                    smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale.fractional_scale()));
+                });
             }
         }
         if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
             send_frames(surface, output, time);
+        }
+        if let Some(icon) = &self.dnd_icon {
+            send_frames(icon, output, time);
         }
     }
 
@@ -143,7 +181,7 @@ impl Lumen {
     pub fn presentation_feedback(&self, output: &Output) -> smithay::desktop::utils::OutputPresentationFeedback {
         let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
         for w in &self.wm.windows {
-            if w.mapped && w.ws == self.wm.current {
+            if w.mapped && w.ws == self.wm.current && self.window_output(w.id).as_ref() == Some(output) {
                 w.window.take_presentation_feedback(&mut feedback, |_, _| Some(output.clone()), |_, _| {
                     smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync
                 });

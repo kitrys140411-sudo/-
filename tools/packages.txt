@@ -19,6 +19,8 @@ mesa-egl
 mesa-gles
 mesa-gbm
 mesa-dri-gallium
+freetype
+harfbuzz
 font-inter
 font-jetbrains-mono
 font-noto-emoji

@@ -51,10 +51,12 @@ def test_keyboard_and_pointer_reach_focused_client(t):
     c.type("hey")
     for ch in "hey":
         client.wait_line(rf"^key sym={ch} utf8={ch} state=pressed")
+    # A window mapped under the resting pointer gets pointer focus right away.
+    client.wait_line(r"^enter kind=pointer")
     cx, cy = w["x"] + 120, w["y"] + 100
     c.pointer(cx, cy)
-    m = client.wait_line(r"^enter kind=pointer x=([\d.]+) y=([\d.]+)")
-    t.check(near(float(m.group(1)), 120, 1.5) and near(float(m.group(2)), 100, 1.5), m.group(0))
+    m = client.wait_line(r"^motion x=120(\.0+)? y=100(\.0+)?\b")
+    t.check(m is not None, "motion at 120,100")
     c.click()
     client.wait_line(rf"^button code={BTN_LEFT} state=pressed")
     client.wait_line(rf"^button code={BTN_LEFT} state=released")

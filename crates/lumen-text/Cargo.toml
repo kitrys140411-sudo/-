@@ -1,0 +1,12 @@
+[package]
+name = "lumen-text"
+description = "Text shaping, layout and glyph rasterization (FreeType + HarfBuzz) for Lumen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# System libraries via pkg-config (no bundled copies).
+freetype-sys = "0.23"
+harfbuzz-sys = { version = "0.8", default-features = false, features = ["freetype"] }
+unicode-segmentation = "1"

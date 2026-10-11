@@ -8,7 +8,7 @@
 use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture};
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
-    GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, Uniform, UniformValue,
+    GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformValue,
 };
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::Texture;
@@ -158,6 +158,8 @@ pub struct WindowSurfaceElement {
     offset: Point<f64, Physical>,
     clip: Option<Clip>,
     program: GlesTexProgram,
+    /// Rounded-rect pixel shader for single-pixel-buffer (solid color) surfaces.
+    solid: Option<GlesPixelProgram>,
 }
 
 impl WindowSurfaceElement {
@@ -169,7 +171,13 @@ impl WindowSurfaceElement {
         clip: Option<Clip>,
         program: GlesTexProgram,
     ) -> Self {
-        WindowSurfaceElement { inner, alias: None, origin, scale, offset, clip, program }
+        WindowSurfaceElement { inner, alias: None, origin, scale, offset, clip, program, solid: None }
+    }
+
+    /// Clip solid-color surfaces with this rounded-rect pixel shader.
+    pub fn with_solid_program(mut self, p: GlesPixelProgram) -> Self {
+        self.solid = Some(p);
+        self
     }
 
     pub fn with_alias(mut self, id: Id) -> Self {
@@ -272,6 +280,29 @@ impl RenderElement<GlesRenderer> for WindowSurfaceElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
+        if let (WaylandSurfaceTexture::SolidColor(color), Some(clip), Some(prog)) = (self.inner.texture(), self.clip, &self.solid) {
+            if clip.radius > 0.0 && dst.size.w > 0 && dst.size.h > 0 {
+                // The window's rounded rectangle, relative to this element.
+                let bx = [
+                    (clip.geo.loc.x - dst.loc.x as f64) as f32,
+                    (clip.geo.loc.y - dst.loc.y as f64) as f32,
+                    clip.geo.size.w as f32,
+                    clip.geo.size.h as f32,
+                ];
+                let c = [color.r(), color.g(), color.b(), color.a()];
+                let uniforms = [
+                    Uniform::new("fill", c),
+                    Uniform::new("fill2", c),
+                    Uniform::new("border", [0.0f32; 4]),
+                    Uniform::new("border_width", 0.0f32),
+                    Uniform::new("radius", clip.radius),
+                    Uniform::new("box", bx),
+                ];
+                let size = Size::<i32, Buffer>::from((dst.size.w, dst.size.h));
+                let src = Rectangle::<f64, Buffer>::from_size((dst.size.w as f64, dst.size.h as f64).into());
+                return frame.render_pixel_shader_to(prog, src, dst, size, Some(damage), self.inner.alpha(), &uniforms);
+            }
+        }
         match self.clip_uniforms(src, dst) {
             Some(uniforms) => {
                 frame.override_default_tex_program(self.program.clone(), uniforms);
@@ -394,6 +425,159 @@ impl RenderElement<GlesRenderer> for Shape {
         let Some(program) = &self.program else { return Ok(()) };
         let size = Size::<i32, Buffer>::from((self.dst.size.w, self.dst.size.h));
         frame.render_pixel_shader_to(program, src, dst, size, Some(damage), self.alpha, &self.uniforms)
+    }
+
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        None
+    }
+}
+
+/// A texture drawn at exact physical coordinates: CPU-drawn images (labels,
+/// icons, HUD) 1:1, and GPU textures (wallpaper, window snapshots) scaled to
+/// any rectangle, optionally through a custom shader. Pixel-exact at
+/// fractional scales, unlike smithay's logical-size texture elements.
+pub struct Image {
+    id: Id,
+    commit: CommitCounter,
+    texture: GlesTexture,
+    pub size: Size<i32, Physical>,
+    last_key: Vec<u32>,
+    /// Every pixel is opaque (wallpapers): lets damage tracking skip what
+    /// is underneath.
+    opaque: bool,
+}
+
+impl Image {
+    /// Upload premultiplied RGBA (`w` × `h`).
+    pub fn upload(r: &mut GlesRenderer, rgba: &[u8], w: u32, h: u32) -> Result<Image, GlesError> {
+        use smithay::backend::renderer::ImportMem;
+        let texture = r.import_memory(rgba, smithay::backend::allocator::Fourcc::Abgr8888, (w as i32, h as i32).into(), false)?;
+        Ok(Image::from_texture(texture, (w as i32, h as i32).into()))
+    }
+
+    pub fn from_texture(texture: GlesTexture, size: Size<i32, Physical>) -> Image {
+        Image { id: Id::new(), commit: CommitCounter::default(), texture, size, last_key: Vec::new(), opaque: false }
+    }
+
+    pub fn opaque(mut self) -> Image {
+        self.opaque = true;
+        self
+    }
+
+    /// Replace the pixels (same id: damage tracking sees one changing element).
+    pub fn update(&mut self, r: &mut GlesRenderer, rgba: &[u8], w: u32, h: u32) -> Result<(), GlesError> {
+        let fresh = Image::upload(r, rgba, w, h)?;
+        self.texture = fresh.texture;
+        self.size = fresh.size;
+        self.commit.increment();
+        Ok(())
+    }
+
+    /// Drawn 1:1 with its top-left at `loc`.
+    pub fn element(&mut self, loc: Point<i32, Physical>, alpha: f32) -> ImageElement {
+        let dst = Rectangle::new(loc, self.size);
+        self.element_in(dst, alpha, None, &[])
+    }
+
+    /// Drawn scaled into `dst`, optionally with a texture `program` whose
+    /// uniforms depend only on `key`.
+    pub fn element_in(
+        &mut self,
+        dst: Rectangle<i32, Physical>,
+        alpha: f32,
+        program: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        key: &[f32],
+    ) -> ImageElement {
+        let k: Vec<u32> = key.iter().map(|v| v.to_bits()).chain([alpha.to_bits()]).collect();
+        if k != self.last_key {
+            self.last_key = k;
+            self.commit.increment();
+        }
+        let (program, uniforms) = match program {
+            Some((p, u)) => (Some(p), u),
+            None => (None, Vec::new()),
+        };
+        ImageElement {
+            id: self.id.clone(),
+            commit: self.commit,
+            texture: self.texture.clone(),
+            tex_size: self.size,
+            dst,
+            alpha,
+            program,
+            uniforms,
+            opaque: self.opaque && alpha >= 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageElement {
+    id: Id,
+    commit: CommitCounter,
+    texture: GlesTexture,
+    tex_size: Size<i32, Physical>,
+    dst: Rectangle<i32, Physical>,
+    alpha: f32,
+    program: Option<GlesTexProgram>,
+    uniforms: Vec<Uniform<'static>>,
+    opaque: bool,
+}
+
+impl Element for ImageElement {
+    fn id(&self) -> &Id {
+        &self.id
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.commit
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        Rectangle::from_size((self.tex_size.w as f64, self.tex_size.h as f64).into())
+    }
+
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.dst
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        if self.opaque {
+            OpaqueRegions::from_slice(&[Rectangle::from_size(self.dst.size)])
+        } else {
+            OpaqueRegions::default()
+        }
+    }
+
+    fn alpha(&self) -> f32 {
+        self.alpha
+    }
+
+    fn kind(&self) -> Kind {
+        Kind::Unspecified
+    }
+}
+
+impl RenderElement<GlesRenderer> for ImageElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        frame.render_texture_from_to(
+            &self.texture,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            Transform::Normal,
+            self.alpha,
+            self.program.as_ref(),
+            &self.uniforms,
+        )
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {

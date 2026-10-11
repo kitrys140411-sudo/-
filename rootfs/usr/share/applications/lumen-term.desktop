@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Use the command line
+Keywords=shell;prompt;command;commandline;cmd;console;
+Exec=lumen-term
+Icon=utilities-terminal
+Categories=System;TerminalEmulator;

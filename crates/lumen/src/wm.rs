@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use smithay::backend::renderer::gles::GlesTexture;
 use smithay::desktop::{Window, WindowSurfaceType};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -43,7 +42,11 @@ pub struct Win {
     pub open: Spring,
     pub mapped: bool,
     pub layout: Layout,
-    pub shadow: Shape,
+    /// Shadow shape per output (each output's damage tracker needs its own).
+    pub shadows: std::collections::HashMap<String, Shape>,
+    /// Where the window was last drawn (logical, global, without the
+    /// workspace offset; includes overview and open-animation transforms).
+    pub last_drawn: Option<Rectangle<f64, Logical>>,
     /// When resizing from the top/left edges, keep this corner fixed.
     pub resize_anchor: Option<(Point<f64, Logical>, bool, bool)>,
     pub last_size: Size<i32, Logical>,
@@ -101,10 +104,13 @@ impl Win {
 
 /// A window that is gone but still animating out, drawn from a snapshot.
 pub struct Closing {
-    pub texture: GlesTexture,
-    pub geo: Rectangle<f64, Logical>,
+    pub image: crate::render::elements::Image,
+    /// Where it was last drawn (logical, global, without workspace offset).
+    pub rect: Rectangle<f64, Logical>,
     pub ws: usize,
     pub progress: Spring,
+    /// Windows that were above it, so the ghost keeps its stacking position.
+    pub above: Vec<u32>,
 }
 
 pub enum GrabKind {
@@ -166,7 +172,8 @@ impl Wm {
             open: Spring::new(0.0, self.open_params),
             mapped: false,
             layout: Layout::Floating,
-            shadow: Shape::default(),
+            shadows: std::collections::HashMap::new(),
+            last_drawn: None,
             resize_anchor: None,
             last_size: Size::default(),
             requested_size: None,
@@ -224,7 +231,10 @@ impl Wm {
             Some(w) => w.size(),
             None => return,
         };
-        let loc = self.place(size, work, current);
+        // A window that asked for a layout (fullscreen, maximized) before its
+        // first buffer is already placed by that layout.
+        let floating = self.get(id).is_some_and(|w| matches!(w.layout, Layout::Floating));
+        let loc = if floating { self.place(size, work, current) } else { self.get(id).map(|w| w.target).unwrap_or_default() };
         if let Some(w) = self.get_mut(id) {
             w.mapped = true;
             w.ws = current;
@@ -269,10 +279,20 @@ impl Wm {
         Some(self.windows.remove(i))
     }
 
-    pub fn start_closing(&mut self, texture: GlesTexture, geo: Rectangle<f64, Logical>, ws: usize) {
+    pub fn start_closing(&mut self, image: crate::render::elements::Image, rect: Rectangle<f64, Logical>, ws: usize, above: Vec<u32>) {
         let mut progress = Spring::new(1.0, self.close_params);
         progress.set_target(0.0);
-        self.closing.push(Closing { texture, geo, ws, progress });
+        self.closing.push(Closing { image, rect, ws, progress, above });
+    }
+
+    /// Whether the topmost window on the current workspace is fullscreen
+    /// (the panel and dock hide).
+    pub fn fullscreen_on_top(&self) -> bool {
+        self.windows
+            .iter()
+            .rev()
+            .find(|w| w.mapped && w.ws == self.current)
+            .is_some_and(|w| matches!(w.layout, Layout::Fullscreen { .. }))
     }
 
     /// Topmost mapped window on the current workspace (for focus fallback).
@@ -347,6 +367,15 @@ impl Wm {
         let Some(w) = self.get(id) else { return };
         let current_rect = w.target_geo();
         let restore = match w.layout {
+            // Not shown yet (a layout requested before the first buffer):
+            // restoring later gives a centered window of a pleasant size.
+            Layout::Floating if !w.mapped || current_rect.size.w <= 0.0 => {
+                let (rw, rh) = ((work.size.w * 0.6).round(), (work.size.h * 0.7).round());
+                Rectangle::new(
+                    ((work.loc.x + (work.size.w - rw) / 2.0).round(), (work.loc.y + (work.size.h - rh) / 2.0).round()).into(),
+                    (rw, rh).into(),
+                )
+            }
             Layout::Floating => current_rect,
             Layout::Maximized { restore } | Layout::Tiled { restore, .. } | Layout::Fullscreen { restore } => restore,
         };

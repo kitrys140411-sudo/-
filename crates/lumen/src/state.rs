@@ -8,10 +8,12 @@ use smithay::desktop::PopupManager;
 use smithay::input::keyboard::{Keysym, XkbConfig};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Clock, Logical, Monotonic, Point};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
@@ -117,6 +119,10 @@ pub struct Lumen {
     pub seat: Seat<Lumen>,
     pub popups: PopupManager,
     pub cursor_status: CursorImageStatus,
+    /// Client surface under the pointer and its origin (None: shell/desktop).
+    pub pointer_target: Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+    /// Icon of the drag-and-drop in progress (client drags).
+    pub dnd_icon: Option<WlSurface>,
     pub cursor_theme: CursorTheme,
     pub pointer_pos: Point<f64, Logical>,
     /// Keys whose release must not reach clients (consumed by shortcuts).
@@ -152,7 +158,10 @@ impl Lumen {
         .expect("cannot register the Wayland display");
 
         let compositor_state = CompositorState::new_v6::<Lumen>(&dh);
-        let xdg_shell_state = XdgShellState::new::<Lumen>(&dh);
+        let xdg_shell_state = XdgShellState::new_with_capabilities::<Lumen>(
+            &dh,
+            [xdg_toplevel::WmCapabilities::Fullscreen, xdg_toplevel::WmCapabilities::Maximize],
+        );
         let xdg_decoration_state = XdgDecorationState::new::<Lumen>(&dh);
         let shm_state = ShmState::new::<Lumen>(&dh, vec![]);
         let dmabuf_state = DmabufState::new();
@@ -180,6 +189,7 @@ impl Lumen {
         let theme = Theme::load();
         let wm = Wm::new(&theme);
         let shell = Shell::new(&theme);
+        let render = RenderState::new(&theme);
 
         Lumen {
             dh,
@@ -208,13 +218,15 @@ impl Lumen {
             seat,
             popups: PopupManager::default(),
             cursor_status: CursorImageStatus::default_named(),
+            dnd_icon: None,
+            pointer_target: None,
             cursor_theme: CursorTheme::load(),
             pointer_pos: (0.0, 0.0).into(),
             suppressed_keys: Vec::new(),
             outputs: Vec::new(),
             wm,
             shell,
-            render: RenderState::default(),
+            render,
             stats: FrameStats::default(),
             ready_notified: false,
         }
