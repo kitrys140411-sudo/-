@@ -133,7 +133,9 @@ impl Lumen {
         let old = w.last_size;
         w.last_size = size;
         let requested = w.requested_size == Some(size);
-        if requested && w.pending_morph.is_some() {
+        // The first new size after a layout change answers it, whether or
+        // not it is exactly the size asked for (clients may round to cells).
+        if w.pending_morph.is_some() {
             w.start_morph(morph_params);
             return;
         }

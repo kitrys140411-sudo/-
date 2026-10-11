@@ -1,0 +1,36 @@
+[package]
+name = "lumen-term"
+description = "Lumen's GPU-accelerated terminal emulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lumen-term"
+path = "src/main.rs"
+
+[[bin]]
+name = "lumen-termdump"
+path = "src/bin/termdump.rs"
+
+[[bin]]
+name = "lumen-termbench"
+path = "src/bin/termbench.rs"
+
+[dependencies]
+# Escape sequence parser (state machine only; the terminal semantics are ours).
+vte = { version = "0.15.0", default-features = false, features = ["std"] }
+unicode-width = "0.2.2"
+unicode-segmentation = "1"
+libc.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+lumen-text = { path = "../lumen-text" }
+# Wayland client side: sctk (+ its calloop and xkbcommon integration) and
+# libwayland-egl for the EGL window surface. EGL/GLES bindings are our own.
+smithay-client-toolkit = "0.19.2"
+wayland-egl = "0.32.11"
+wayland-backend = { version = "0.3", features = ["client_system"] }

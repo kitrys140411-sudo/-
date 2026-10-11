@@ -99,6 +99,7 @@ pub struct Shell {
     /// Keyboard selection among results / app grid.
     pub selected: usize,
     pub apps: Vec<App>,
+    apps_stamp: u64,
     pub favorites: Vec<String>,
     /// 0 = hidden below the screen edge, 1 = shown.
     pub dock: Spring,
@@ -135,6 +136,7 @@ impl Shell {
             results: Vec::new(),
             selected: 0,
             apps: apps::load(),
+            apps_stamp: apps::dirs_stamp(),
             favorites,
             dock,
             popover: None,
@@ -267,6 +269,14 @@ impl Shell {
         for w in wm.windows.iter().filter(|w| w.mapped) {
             let app_id = w.app_id();
             let key = if app_id.is_empty() { format!("window-{}", w.id) } else { app_id.clone() };
+            // Icons of windows without an app id are keyed by their title's
+            // first letter: a bounded set of textures, not one per window.
+            let fallback_icon = if app_id.is_empty() {
+                let first: String = w.title().chars().find(|c| c.is_alphanumeric()).map(|c| c.to_lowercase().collect()).unwrap_or_default();
+                format!("letter-{first}")
+            } else {
+                key.clone()
+            };
             if let Some(item) = items.iter_mut().find(|i| app_matches(&i.id, &i.exec, &key)) {
                 item.windows.push(w.id);
                 continue;
@@ -275,7 +285,7 @@ impl Shell {
             items.push(DockItem {
                 id: key.clone(),
                 name: app.map(|a| a.name.clone()).unwrap_or_else(|| if w.title().is_empty() { key.clone() } else { w.title() }),
-                icon: app.map(icon_name).unwrap_or_else(|| key.clone()),
+                icon: app.map(icon_name).unwrap_or(fallback_icon),
                 exec: app.map(|a| a.exec.clone()),
                 windows: vec![w.id],
             });
@@ -438,7 +448,11 @@ impl Lumen {
         self.shell.results.clear();
         if open {
             // Pick up apps installed since the last time.
-            self.shell.apps = apps::load();
+            let stamp = apps::dirs_stamp();
+            if stamp != self.shell.apps_stamp {
+                self.shell.apps = apps::load();
+                self.shell.apps_stamp = stamp;
+            }
         } else if self.shell.apps_mode {
             self.shell_set_apps_mode(false);
         }

@@ -366,10 +366,12 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     }
 
     let overview = ctx.shell.overview_progress();
-    // Overview slots of every workspace on screen (several while sliding).
+    // Overview slots of every workspace on screen (several while sliding);
+    // the overview lives on the primary output only.
+    let is_primary = ctx.primary.as_deref().is_none_or(|p| p == out_name);
     let mut slots: HashMap<u32, Rectangle<f64, Logical>> = HashMap::new();
     for ws in 0..WORKSPACES {
-        if ctx.wm.ws_visible(ws) {
+        if is_primary && ctx.wm.ws_visible(ws) {
             if let Some(l) = ctx.shell.overview_layout_ws(ctx.wm, ctx.theme, out_rect, ws) {
                 slots.extend(l);
             }
@@ -480,10 +482,12 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         // Shadow under the window.
         let shadow_prog = shaders.shadow.clone();
         let w = &mut ctx.wm.windows[i];
-        w.last_drawn = Some(Rectangle::new(
-            (f_log.loc.x + out_rect.loc.x - ws_dx, f_log.loc.y + out_rect.loc.y).into(),
-            f_log.size,
-        ));
+        if is_primary {
+            w.last_drawn = Some(Rectangle::new(
+                (f_log.loc.x + out_rect.loc.x - ws_dx, f_log.loc.y + out_rect.loc.y).into(),
+                f_log.size,
+            ));
+        }
         if !matches!(w.layout, Layout::Fullscreen { .. }) {
             let sigma = g.shadow_blur * scale * total.max(0.3) / 2.0;
             let dy = g.shadow_offset_y * scale * total;
@@ -543,7 +547,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     if !requests.is_empty() {
         let RenderState { shaders, glass, .. } = &mut *ctx.rs;
         if let Some(shaders) = shaders.as_ref() {
-            glass.apply(r, shaders, theme, &out_name, phys, requests, &mut elements, clear);
+            glass.apply(r, shaders, theme, &out_name, phys, scale, requests, &mut elements, clear);
         }
     }
     ctx.rs.text.end_frame();

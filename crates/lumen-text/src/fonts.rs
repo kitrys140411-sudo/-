@@ -55,7 +55,8 @@ fn find_files(dir: &str, out: &mut Vec<String>, depth: u32) {
     }
 }
 
-/// All installed font faces (scanned once per process; cheap: only headers are read).
+/// All installed font faces (scanned once per process; FreeType maps each
+/// file and reads its headers).
 pub struct FontDb {
     pub lib: Rc<Library>,
     pub faces: Vec<FontFile>,
@@ -108,6 +109,9 @@ pub struct FontSet {
     lib: Rc<Library>,
     files: Vec<FontFile>,
     instances: RefCell<HashMap<(usize, u32), Rc<Font>>>,
+    /// Fallback choices per grapheme and size: selection opens fonts, which
+    /// must not happen again for every frame of text.
+    selected: RefCell<HashMap<(String, u32), usize>>,
 }
 
 impl FontSet {
@@ -126,7 +130,7 @@ impl FontSet {
         if files.is_empty() {
             return Err(Error("no fonts installed".into()));
         }
-        Ok(FontSet { lib: db.lib.clone(), files, instances: RefCell::new(HashMap::new()) })
+        Ok(FontSet { lib: db.lib.clone(), files, instances: RefCell::new(HashMap::new()), selected: RefCell::new(HashMap::new()) })
     }
 
     pub fn primary(&self) -> &FontFile {
@@ -149,9 +153,10 @@ impl FontSet {
         }
         let font = Rc::new(self.files.get(index)?.instance(&self.lib, px).ok()?);
         let mut map = self.instances.borrow_mut();
-        // Bound the cache: UI uses a handful of sizes.
-        if map.len() > 64 {
-            map.clear();
+        // Bound the cache (the UI uses a handful of sizes); keep the
+        // primary fonts, which are needed by nearly every string.
+        if map.len() > 512 {
+            map.retain(|(i, _), _| *i < 2);
         }
         map.insert(key, font.clone());
         Some(font)
@@ -161,6 +166,24 @@ impl FontSet {
     /// grapheme), ignoring joiners and variation selectors. Emoji presentation
     /// (VS16, or emoji-default characters) prefers a color font.
     pub fn select(&self, cluster: &str, px: f32) -> usize {
+        // ASCII is in the primary font of any sane setup; skip the cache.
+        if cluster.len() == 1 && self.font(0, px).is_some_and(|f| cluster.chars().all(|c| f.has_char(c))) {
+            return 0;
+        }
+        let key = (cluster.to_string(), px.to_bits());
+        if let Some(&i) = self.selected.borrow().get(&key) {
+            return i;
+        }
+        let i = self.select_uncached(cluster, px);
+        let mut map = self.selected.borrow_mut();
+        if map.len() > 8192 {
+            map.clear();
+        }
+        map.insert(key, i);
+        i
+    }
+
+    fn select_uncached(&self, cluster: &str, px: f32) -> usize {
         let chars: Vec<char> = cluster.chars().filter(|c| !is_invisible_joiner(*c)).collect();
         if chars.is_empty() {
             return 0;

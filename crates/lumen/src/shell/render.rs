@@ -311,12 +311,16 @@ fn tooltip(ui: &mut Ui, text: &str, anchor: Rect, alpha: f32) {
     let theme = ui.ctx.theme;
     let g = theme.geometry.grid;
     let style = Style::new(12.0, theme.colors.text);
-    let (w, h) = ui.measure(text, &style, None, None);
-    let bw = w + g * 2.0;
+    // Window titles can be arbitrarily long: one ellipsized line.
+    let max_w = (ui.out.size.w * 0.5).max(g * 8.0);
+    let (w, h) = ui.measure(text, &style, Some(max_w), Some(1));
+    let bw = (w + g * 2.0).min(ui.out.size.w - g * 2.0);
     let bh = h + g;
-    let x = (anchor.loc.x + (anchor.size.w - bw) / 2.0).clamp(ui.out.loc.x + g, ui.out.loc.x + ui.out.size.w - bw - g);
+    let lo = ui.out.loc.x + g;
+    let hi = (ui.out.loc.x + ui.out.size.w - bw - g).max(lo);
+    let x = (anchor.loc.x + (anchor.size.w - bw) / 2.0).clamp(lo, hi);
     let y = anchor.loc.y - bh - g * 1.5;
-    ui.text(text, &style, Point::from((x + g, y + g * 0.5)), None, None, alpha);
+    ui.text(text, &style, Point::from((x + g, y + g * 0.5)), Some(max_w), Some(1), alpha);
     ui.rect("tooltip", 0, layout::rect(x, y, bw, bh), bh / 2.0, theme.colors.surface, Some((theme.colors.border, 1.0)), alpha);
 }
 
@@ -352,7 +356,11 @@ fn notifications(ui: &mut Ui) {
     let theme = ui.ctx.theme;
     let g = theme.geometry.grid;
     let w = theme.geometry.notification_width.min(ui.out.size.w - g * 4.0);
-    let x = ui.out.loc.x + (ui.out.size.w - w) / 2.0;
+    // Top center; in the overview they move to the right edge so the search
+    // entry stays visible.
+    let center = ui.out.loc.x + (ui.out.size.w - w) / 2.0;
+    let right = ui.out.loc.x + ui.out.size.w - w - g * 2.0;
+    let x = center + (right - center) * ui.ctx.shell.overview_progress();
     let mut y = ui.out.loc.y + theme.geometry.panel_height + g * 1.5;
     let title_style = Style::new(14.0, theme.colors.text).weight(Weight::SemiBold);
     let body_style = Style::new(13.0, theme.colors.text_dim);
@@ -429,6 +437,7 @@ fn switcher(ui: &mut Ui) {
     }
     let mut x = bg.loc.x + pad * k;
     let mut thumbs = Vec::new();
+    let mut sel_pos = None;
     for (id, (w, h)) in ids.iter().zip(&sizes) {
         let cw = card_w(*w) * k;
         let card = layout::rect(x, bg.loc.y + pad * k, cw, (thumb_h + pad) * k);
@@ -436,13 +445,15 @@ fn switcher(ui: &mut Ui) {
         let thumb = layout::rect(card.loc.x + (cw - tw) / 2.0, card.loc.y + pad / 2.0 * k + (thumb_h * k - th) / 2.0, tw, th);
         thumbs.push((*id, ui.phys(thumb)));
         if Some(*id) == selected {
+            sel_pos = Some(ui.elements.len());
             ui.rect("sw-sel", 0, card, theme.geometry.popover_radius * 0.75, theme.colors.surface_hover, Some((theme.colors.accent.with_alpha(0.9), 2.0)), appear);
         }
         x += cw + gap * k;
     }
     // Thumbnails go in front of the selection card (pushed before the
     // background, so in front of it as well).
-    let pos = ui.elements.len() - if selected.is_some() { 1 } else { 0 };
+    // (Only if the selection card was really drawn.)
+    let pos = sel_pos.filter(|&p| p < ui.elements.len()).unwrap_or(ui.elements.len());
     let mut thumb_elems = Vec::new();
     for (id, rect) in thumbs {
         crate::render::thumbnail_elements(ui.r, ui.ctx, id, rect, theme.geometry.window_radius * 0.5 * ui.scale, appear, 1, &mut thumb_elems);

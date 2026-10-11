@@ -60,6 +60,8 @@ impl Style {
 pub struct UiText {
     sys: Option<TextSystem>,
     labels: HashMap<Key, Label>,
+    /// Measured sizes (layout is too costly to repeat every frame).
+    measures: HashMap<Key, ((f64, f64), u64)>,
     frame: u64,
 }
 
@@ -72,7 +74,7 @@ impl UiText {
                 None
             }
         };
-        UiText { sys, labels: HashMap::new(), frame: 0 }
+        UiText { sys, labels: HashMap::new(), measures: HashMap::new(), frame: 0 }
     }
 
     fn key(text: &str, style: &Style, scale: f64, max_width: Option<f64>, max_lines: Option<usize>) -> Key {
@@ -119,6 +121,17 @@ impl UiText {
 
     /// Layout size (physical) of a label without drawing it.
     pub fn measure(&mut self, text: &str, style: &Style, scale: f64, max_width: Option<f64>, max_lines: Option<usize>) -> (f64, f64) {
+        let key = UiText::key(text, style, scale, max_width, max_lines);
+        if let Some((size, used)) = self.measures.get_mut(&key) {
+            *used = self.frame;
+            return *size;
+        }
+        let size = self.measure_uncached(text, style, scale, max_width, max_lines);
+        self.measures.insert(key, (size, self.frame));
+        size
+    }
+
+    fn measure_uncached(&mut self, text: &str, style: &Style, scale: f64, max_width: Option<f64>, max_lines: Option<usize>) -> (f64, f64) {
         let Some(sys) = self.sys.as_mut() else { return (0.0, 0.0) };
         let c = style.color;
         let ts = TextStyle::new((style.size * scale) as f32, [c.r, c.g, c.b, c.a]).weight(style.weight);
@@ -159,6 +172,7 @@ impl UiText {
         let frame = self.frame;
         if frame % 120 == 0 {
             self.labels.retain(|_, l| frame - l.last_used < 600);
+            self.measures.retain(|_, (_, used)| frame - *used < 600);
         }
     }
 

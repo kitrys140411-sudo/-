@@ -60,11 +60,11 @@ fn hash_rect(r: Rectangle<i32, Physical>, h: &mut impl Hasher) {
     (r.loc.x, r.loc.y, r.size.w, r.size.h).hash(h);
 }
 
-fn signature(elements: &[LumenElement], region: Rectangle<i32, Physical>) -> u64 {
+fn signature(elements: &[LumenElement], region: Rectangle<i32, Physical>, scale: f64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     hash_rect(region, &mut h);
     for e in elements {
-        let geo = e.geometry(Scale::from(1.0));
+        let geo = e.geometry(Scale::from(scale));
         if !geo.overlaps(region) {
             continue;
         }
@@ -84,12 +84,13 @@ fn capture(
     region: Rectangle<i32, Physical>,
     elements: &[LumenElement],
     clear: Color32F,
+    scale: f64,
 ) -> Result<(), smithay::backend::renderer::gles::GlesError> {
     let mut fb = r.bind(target)?;
     let mut frame = r.render(&mut fb, size, Transform::Normal)?;
     frame.clear(clear, &[region])?;
     for e in elements.iter().rev() {
-        let geo = e.geometry(Scale::from(1.0));
+        let geo = e.geometry(Scale::from(scale));
         let Some(visible) = geo.intersection(region) else { continue };
         let mut local = visible;
         local.loc -= geo.loc;
@@ -109,6 +110,7 @@ impl GlassCache {
         theme: &Theme,
         output: &str,
         size: Size<i32, Physical>,
+        scale: f64,
         mut requests: Vec<GlassRequest>,
         elements: &mut Vec<LumenElement>,
         clear: Color32F,
@@ -132,16 +134,15 @@ impl GlassCache {
             let x1 = (req.rect.loc.x + req.rect.size.w).ceil() as i32;
             let y1 = (req.rect.loc.y + req.rect.size.h).ceil() as i32;
             let dst = Rectangle::<i32, Physical>::new((x0, y0).into(), (x1 - x0, y1 - y0).into());
-            let Some(region) = Rectangle::<i32, Physical>::new((x0 - margin, y0 - margin).into(), (x1 - x0 + 2 * margin, y1 - y0 + 2 * margin).into())
-                .intersection(full)
-            else {
-                continue;
-            };
-            if dst.size.w <= 0 || dst.size.h <= 0 || region.size.w <= 2 || region.size.h <= 2 {
+            // Not clipped to the output (sampling clamps at its edges), so the
+            // region keeps its size while a pane slides in or out and its
+            // textures are reused.
+            let region = Rectangle::<i32, Physical>::new((x0 - margin, y0 - margin).into(), (x1 - x0 + 2 * margin, y1 - y0 + 2 * margin).into());
+            if dst.size.w <= 0 || dst.size.h <= 0 || !region.overlaps(full) {
                 continue;
             }
             let behind = &elements[req.index + 1..];
-            let sig = signature(behind, region);
+            let sig = signature(behind, region, scale);
             let key = (output.to_string(), req.key.0, req.key.1);
             let fresh = self.panes.get(&key).is_none_or(|p| p.signature != sig || p.region != region);
             if fresh {
@@ -161,7 +162,7 @@ impl GlassCache {
                     )
                         .intersection(full)
                         .unwrap_or(region);
-                    capture(r, &mut cap, size, pad, behind, clear)?;
+                    capture(r, &mut cap, size, pad, behind, clear, scale)?;
                     // Reuse the pane's texture when its size is unchanged.
                     let mut out = match self.panes.get(&key).filter(|p| p.region.size == region.size) {
                         Some(p) => p.image.texture().clone(),
@@ -219,6 +220,6 @@ impl GlassCache {
             elements.insert(req.index + 1, LumenElement::Image(el));
         }
         self.panes.retain(|(o, _, _), p| o != output || p.used);
-        self.blur.trim(24);
+        self.blur.trim(64);
     }
 }

@@ -250,7 +250,17 @@ impl Element for WindowSurfaceElement {
         if self.scale == (1.0, 1.0) {
             return damage;
         }
-        damage.into_iter().map(|r| r.to_f64().upscale(Scale::from(self.scale)).to_i32_up()).collect()
+        // Inflated by a pixel: the scaled rectangle's sub-pixel origin is
+        // rounded differently from the element's geometry.
+        damage
+            .into_iter()
+            .map(|r| {
+                let mut d = r.to_f64().upscale(Scale::from(self.scale)).to_i32_up();
+                d.loc -= (1, 1).into();
+                d.size += (2, 2).into();
+                d
+            })
+            .collect()
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {

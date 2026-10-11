@@ -61,7 +61,6 @@ pub struct FontFile {
     /// Has color bitmaps (CBDT/sbix), e.g. Noto Color Emoji.
     pub color: bool,
     pub scalable: bool,
-    data: Rc<Vec<u8>>,
 }
 
 impl fmt::Debug for FontFile {
@@ -70,22 +69,21 @@ impl fmt::Debug for FontFile {
     }
 }
 
-/// Owned FT_Face (closed on drop).
+/// Owned FT_Face (closed on drop). Faces are opened from the file path:
+/// FreeType maps the file and reads only what it needs, so scanning every
+/// installed font costs little memory.
 struct Face {
     raw: ft::FT_Face,
     _lib: Rc<Library>,
-    _data: Rc<Vec<u8>>,
 }
 
 impl Face {
-    fn open(lib: &Rc<Library>, data: &Rc<Vec<u8>>, index: isize) -> Result<Face, Error> {
+    fn open(lib: &Rc<Library>, path: &str, index: isize) -> Result<Face, Error> {
+        let c = std::ffi::CString::new(path).map_err(|_| Error(format!("{path}: NUL in path")))?;
         let mut raw = std::ptr::null_mut();
-        // SAFETY: the data outlives the face (kept in `_data`).
-        check(
-            unsafe { ft::FT_New_Memory_Face(lib.raw, data.as_ptr(), data.len() as c_long, index as c_long, &mut raw) },
-            "FT_New_Memory_Face",
-        )?;
-        Ok(Face { raw, _lib: lib.clone(), _data: data.clone() })
+        // SAFETY: a valid C path; FreeType copies what it needs.
+        check(unsafe { ft::FT_New_Face(lib.raw, c.as_ptr(), index as c_long, &mut raw) }, "FT_New_Face")?;
+        Ok(Face { raw, _lib: lib.clone() })
     }
 
     fn rec(&self) -> &ft::FT_FaceRec {
@@ -96,7 +94,7 @@ impl Face {
 
 impl Drop for Face {
     fn drop(&mut self) {
-        // SAFETY: opened by FT_New_Memory_Face.
+        // SAFETY: opened by FT_New_Face.
         unsafe { ft::FT_Done_Face(self.raw) };
     }
 }
@@ -112,13 +110,12 @@ fn cstr(p: *const std::ffi::c_char) -> String {
 impl FontFile {
     /// All faces in a font file.
     pub fn load_all(lib: &Rc<Library>, path: &str) -> Result<Vec<FontFile>, Error> {
-        let data = Rc::new(std::fs::read(path).map_err(|e| Error(format!("{path}: {e}")))?);
-        let first = Face::open(lib, &data, 0)?;
+        let first = Face::open(lib, path, 0)?;
         let count = first.rec().num_faces.max(1) as isize;
         drop(first);
         let mut out = Vec::new();
         for index in 0..count {
-            let face = Face::open(lib, &data, index)?;
+            let face = Face::open(lib, path, index)?;
             let r = face.rec();
             out.push(FontFile {
                 path: path.to_string(),
@@ -127,7 +124,6 @@ impl FontFile {
                 style: cstr(r.style_name),
                 color: r.face_flags & ft::FT_FACE_FLAG_COLOR != 0,
                 scalable: r.face_flags & ft::FT_FACE_FLAG_SCALABLE != 0,
-                data: data.clone(),
             });
         }
         Ok(out)
@@ -181,7 +177,7 @@ const FIXED: f32 = 64.0;
 
 impl Font {
     fn new(lib: &Rc<Library>, file: &FontFile, px: f32) -> Result<Font, Error> {
-        let face = Face::open(lib, &file.data, file.index)?;
+        let face = Face::open(lib, &file.path, file.index)?;
         let px = px.max(1.0);
         let mut bitmap_scale = 1.0;
         let rec = face.rec();

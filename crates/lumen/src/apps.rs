@@ -119,6 +119,18 @@ pub fn parse(id: &str, text: &str) -> Option<App> {
     })
 }
 
+/// A cheap fingerprint of the application directories (their modification
+/// times): the app list is re-read only when it changes.
+pub fn dirs_stamp() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for dir in dirs() {
+        let t = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+        (dir, t).hash(&mut h);
+    }
+    h.finish()
+}
+
 pub fn load() -> Vec<App> {
     let mut apps: Vec<App> = Vec::new();
     for dir in dirs() {
