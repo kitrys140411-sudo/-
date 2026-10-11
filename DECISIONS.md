@@ -83,3 +83,23 @@ Each entry: what was chosen and why. Newest at the bottom of each section.
   (credentials checked with SCM_CREDENTIALS). Busybox-compatible shutdown signals.
 - `seatd` (Alpine package) gives the unprivileged compositor DRM/input access;
   `libudev-zero` replaces udevd (no udev daemon at all).
+
+## Shell (M3)
+
+- **Character-level recursive descent** with interleaved lexing: `$(...)` is parsed
+  by recursing into the parser on the same buffer (correct nesting of quotes and
+  parentheses), here-document bodies are attached after the line is read.
+  Parse errors at end of input are flagged `incomplete` → PS2 continuation.
+- Expansion keeps per-character provenance (quoted / from an unquoted expansion)
+  so field splitting (POSIX 2.6.5 state machine), globbing and `"$@"` are exact.
+- **Reference behaviour is dash**: `tests/posix/*.out` were recorded with dash and
+  every scenario must match byte for byte. Deliberate differences: `echo` does
+  not interpret backslashes without `-e` (bash behaviour); expansion errors exit
+  non-interactive shells with status 2 (like dash).
+- Job control as in POSIX: the interactive shell owns the terminal, each job gets a
+  process group, `tcsetpgrp` hands the terminal over, terminal modes are saved per
+  stopped job. A forked child whose remaining work is one simple command `exec`s it
+  directly (no double fork; killing a job kills the real processes).
+- Line editor redraws the whole (wrapped) line on change, but coalesces redraws while
+  input is queued; consecutive kills accumulate (readline semantics).
+- `lsh` is linked statically (it is also the rescue shell inside the initramfs).

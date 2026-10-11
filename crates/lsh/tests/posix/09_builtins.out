@@ -1,0 +1,28 @@
+a=1
+b=2
+   ab|cd   |00042|ff|10|x
+3.14
+no newline
+eq
+streq
+strne
+zn
+andop
+notexists
+files
+3
+0
+evaluated 2
+dynamic
+cd
+has-printf
+opt-a
+opt-b=val
+opt-c
+OPTIND=5
+/tmp
+cd-back
+0027
+first|second third
+x y z
+0

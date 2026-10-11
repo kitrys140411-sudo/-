@@ -1,0 +1,10 @@
+sub status 1
+continues
+if-ok
+neg-ok
+nounset status 2
+got-usr1
+after-signal
+inner-trap
+end
+exit-trap

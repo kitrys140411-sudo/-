@@ -17,13 +17,17 @@ def wait_menu(m, timeout=120):
     return m.wait_serial(r"lumen-boot: menu shown", timeout=timeout)
 
 
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
 def boot_to_shell(m, timeout=240):
     """Boot the default entry and wait for the serial root shell."""
     wait_menu(m)
     m.key("ret")
     m.wait_serial(r"started serial-console", timeout=timeout)
-    m.write_serial("\n")
-    m.wait_serial(r"lumen:[^\n]*# ", timeout=60)
+    since = m.serial_offset()
+    m.write_serial("echo __RE\"\"ADY__\n")
+    m.wait_serial(r"__READY__", timeout=60, since=since)
 
 
 def run(m, cmd, timeout=60):
@@ -33,6 +37,7 @@ def run(m, cmd, timeout=60):
     m.write_serial(f"{cmd}; echo __DO\"\"NE_{n}_$?\n")
     match = m.wait_serial(rf"__DONE_{n}_(\d+)", timeout=timeout, since=since)
     text = m.serial_text().encode()[since:match.start()].decode("utf-8", "replace").replace("\r", "")
+    text = ANSI.sub("", text)
     # The shell echoes (and may redraw) the command line; output starts after
     # the last echo of its tail.
     tail = re.compile(rf"_{n}_\$\?\n")

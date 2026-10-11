@@ -1,0 +1,14 @@
+hello world
+720
+status 3
+3:a b c
+2:b c
+after: 0
+counter=2
+in local
+out global
+inner-called
+inner-called
+redefined x
+f gone
+5 4 3 2 1 

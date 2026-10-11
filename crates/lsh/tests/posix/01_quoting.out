@@ -1,0 +1,11 @@
+single $HOME "q"
+double 'q' $ " \ ` x
+a b	c
+abcd
+
+multi
+line
+it's
+\n stays
+tab	inside
+a b|c||d|

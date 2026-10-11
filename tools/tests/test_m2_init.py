@@ -76,7 +76,13 @@ def test_bad_root_gives_clear_error(t):
     m.wait_serial(r"did not appear within 10 s", timeout=180)
     m.wait_serial(r"vda2 PARTUUID=" + ROOT_PARTUUID, timeout=10)
     m.wait_serial(r"Lumen: boot failed", timeout=10)
-    m.wait_exit(90)
+    # The initramfs carries lsh as a rescue shell; leaving it reboots.
+    since = m.serial_offset()
+    m.write_serial("echo rescue-$((40+2)); ls /dev/vda2\n")
+    m.wait_serial(r"rescue-42", timeout=30, since=since)
+    m.write_serial("exit\n")
+    m.wait_serial(r"rebooting in 5 s", timeout=30)
+    m.wait_exit(60)
 
 
 def test_boot_timing(t):

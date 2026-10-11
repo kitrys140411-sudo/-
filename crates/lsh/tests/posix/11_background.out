@@ -1,0 +1,8 @@
+has-pid
+wait status 0
+bg status 5
+bg1
+bg2
+bg3
+all-done
+x=1

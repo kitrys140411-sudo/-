@@ -1,0 +1,25 @@
+one
+two
+2
+err
+out
+status 0
+heredoc  expanded 2
+  indented stays
+not $expanded
+tab stripped
+PIPED VALUE
+via-fd3
+got: one
+got: two
+1
+2
+in-if
+b c-a
+[l1]
+[l2]
+[l3]
+missing file
+hi
+noclobber
+y

@@ -35,12 +35,12 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 - [ ] Boot timing: kernel start → desktop first frame ≤ 5 s (measured, reported via serial)
 
 ## M3 — Shell (`lsh`)
-- [ ] Lexer/parser: words, quotes, escapes, `$VAR ${VAR} ${VAR:-x}` etc., `$?` `$$` `$!` `$#` `$@`, `$(...)`, `$((...))`, tilde, globs
-- [ ] Pipelines, redirects (`< > >> 2> 2>&1 &> <<EOF <<-`), lists `; & && ||`, `( )`, `{ }`, if/while/until/for/case, functions
-- [ ] Builtins: cd, pwd, echo, export, unset, set, exit, true/false, test/[, read, source/., alias, jobs, fg, bg, wait, history, type, kill, shift, return, local
-- [ ] Job control: process groups, terminal ownership, Ctrl+C/Ctrl+Z, fg/bg, job notifications
-- [ ] Line editor: raw mode, cursor movement, word ops, history (persistent, search Ctrl+R), completion (commands, paths), syntax highlighting, configurable prompt (`PS1` escapes, `~/.lshrc`)
-- [ ] Tests: parser unit tests + POSIX scenario tests (compared against expected output), job control test through a PTY
+- [x] Lexer/parser: words, quotes, escapes, `$VAR ${VAR} ${VAR:-x}` etc., `$?` `$$` `$!` `$#` `$@`, `$(...)`, `$((...))`, tilde, globs
+- [x] Pipelines, redirects (`< > >> 2> 2>&1 &> <<EOF <<-`), lists `; & && ||`, `( )`, `{ }`, if/while/until/for/case, functions
+- [x] Builtins: cd, pwd, echo, export, unset, set, exit, true/false, test/[, read, source/., alias, jobs, fg, bg, wait, history, type, kill, shift, return, local
+- [x] Job control: process groups, terminal ownership, Ctrl+C/Ctrl+Z, fg/bg, job notifications
+- [x] Line editor: raw mode, cursor movement, word ops, history (persistent, search Ctrl+R), completion (commands, paths), syntax highlighting, configurable prompt (`PS1` escapes, `~/.lshrc`)
+- [x] Tests: parser unit tests + POSIX scenario tests (compared against expected output), job control test through a PTY
 
 ## M4 — Compositor (`lumen`, smithay)
 - [ ] udev/DRM/KMS backend: GBM + EGL + GLES, page flip on vblank, frame scheduling, libseat session, libinput

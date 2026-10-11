@@ -1,0 +1,19 @@
+and1
+or1
+chain
+negated
+neg status 1
+in sub
+out []
+group grp
+subshell exit 3
+0
+1
+a
+b
+c
+pipe status 0
+pipe status 1
+z
+/
+/tmp

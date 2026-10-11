@@ -1,0 +1,12 @@
+# /etc/profile: environment for login shells (Lumen).
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+export CHARSET=UTF-8
+export LANG=C.UTF-8
+export PAGER=less
+export EDITOR=vi
+umask 022
+
+for script in /etc/profile.d/*.sh; do
+    [ -r "$script" ] && . "$script"
+done
+unset script

@@ -1,6 +1,6 @@
 # Root shell on the first serial port (QEMU tests, debugging). Remove this file
 # to disable it on real hardware.
 description = Serial console shell
-exec        = /bin/sh -l
+exec        = /bin/lsh -l
 tty         = /dev/ttyS0
 restart     = always

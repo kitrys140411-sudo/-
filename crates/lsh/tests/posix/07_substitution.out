@@ -1,0 +1,14 @@
+inner
+quoted nested
+backquote
+[a
+b]
+status 1
+status 7
+a b
+a
+b
+10
+/tmp
+[  spaced  ]
+case-in-subst

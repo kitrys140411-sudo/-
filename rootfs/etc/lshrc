@@ -1,0 +1,8 @@
+# /etc/lshrc: system-wide settings for interactive lsh sessions.
+# Per-user settings go to ~/.lshrc (PS1, aliases, functions).
+
+alias ls='ls --color=auto'
+alias ll='ls -lh'
+alias la='ls -lhA'
+alias grep='grep --color=auto'
+alias ..='cd ..'
