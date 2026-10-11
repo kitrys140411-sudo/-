@@ -161,6 +161,16 @@ fn combining_marks_and_emoji_sequences() {
 }
 
 #[test]
+fn flags_are_one_wide_cluster() {
+    let mut t = term(10, 1);
+    feed(&mut t, "\u{1F1FA}\u{1F1E6}x\u{1F1E9}");
+    assert_eq!(t.term.row_text(0), "\u{1F1FA}\u{1F1E6}x\u{1F1E9}");
+    assert!(cell(&t, 0, 0).has(attr::WIDE));
+    assert_eq!(cell(&t, 2, 0).ch, 'x');
+    assert_eq!(t.term.cursor.x, 5);
+}
+
+#[test]
 fn tabs() {
     let mut t = term(20, 1);
     feed(&mut t, "a\tb\tc");

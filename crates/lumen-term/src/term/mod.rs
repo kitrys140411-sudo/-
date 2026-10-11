@@ -544,10 +544,21 @@ impl Term {
         } else {
             c
         };
-        let width = if ascii { 1 } else { c.width().unwrap_or(0) };
+        let mut width = if ascii { 1 } else { c.width().unwrap_or(0) };
         if width == 0 {
             self.combine(c);
             return;
+        }
+        // Flags are pairs of regional indicators shown as one wide glyph.
+        if is_regional_indicator(c) {
+            if let Some((x, y)) = self.previous_cell() {
+                let row = self.grid().row(y);
+                if is_regional_indicator(row.cells[x].ch) && !row.cells[x].has(attr::EXTRA) {
+                    self.combine(c);
+                    return;
+                }
+            }
+            width = 2;
         }
         // Emoji sequences: after a zero width joiner the next pictograph
         // belongs to the same grapheme.
@@ -1164,6 +1175,10 @@ impl Term {
         v.extend(color(p.bg, 40));
         v.join(";")
     }
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
 }
 
 /// First value of each parameter, with `default` for missing/zero ones.

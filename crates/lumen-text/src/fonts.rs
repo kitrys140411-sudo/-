@@ -85,13 +85,28 @@ impl FontDb {
 
     /// The face of `family` closest to `weight` (upright).
     pub fn find(&self, family: &str, weight: Weight) -> Option<FontFile> {
-        let fam: Vec<&FontFile> = self
-            .faces
-            .iter()
-            .filter(|f| f.family.eq_ignore_ascii_case(family) && !f.style.to_ascii_lowercase().contains("italic"))
-            .collect();
+        self.find_styled(family, weight, false)
+    }
+
+    /// The face of `family` closest to `weight`, italic or upright. Italic
+    /// requests fall back to the upright face.
+    pub fn find_styled(&self, family: &str, weight: Weight, italic: bool) -> Option<FontFile> {
+        let is_italic = |f: &FontFile| {
+            let s = f.style.to_ascii_lowercase();
+            s.contains("italic") || s.contains("oblique")
+        };
+        let fam: Vec<&FontFile> = self.faces.iter().filter(|f| f.family.eq_ignore_ascii_case(family) && is_italic(f) == italic).collect();
+        if fam.is_empty() {
+            return if italic { self.find_styled(family, weight, false) } else { None };
+        }
+        // "Bold Italic" → "Bold"; "Italic" alone is the regular weight.
+        let base = |f: &FontFile| {
+            let s = f.style.replace("Italic", "").replace("Oblique", "");
+            let s = s.trim().to_string();
+            if s.is_empty() { "Regular".to_string() } else { s }
+        };
         for name in weight.style_names() {
-            if let Some(f) = fam.iter().find(|f| f.style.eq_ignore_ascii_case(name)) {
+            if let Some(f) = fam.iter().find(|f| base(f).eq_ignore_ascii_case(name)) {
                 return Some((*f).clone());
             }
         }
@@ -118,7 +133,12 @@ impl FontSet {
     /// `families` in priority order (missing ones are skipped); color emoji and
     /// then every other installed font are appended as last-resort fallbacks.
     pub fn new(db: &FontDb, families: &[&str], weight: Weight) -> Result<FontSet, Error> {
-        let mut files: Vec<FontFile> = families.iter().filter_map(|f| db.find(f, weight)).collect();
+        FontSet::new_styled(db, families, weight, false)
+    }
+
+    /// Like `new`, choosing italic faces of the families when `italic`.
+    pub fn new_styled(db: &FontDb, families: &[&str], weight: Weight, italic: bool) -> Result<FontSet, Error> {
+        let mut files: Vec<FontFile> = families.iter().filter_map(|f| db.find_styled(f, weight, italic)).collect();
         if let Some(e) = db.emoji() {
             files.push(e);
         }

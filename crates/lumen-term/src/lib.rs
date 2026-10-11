@@ -4,5 +4,8 @@
 //! binary.
 
 pub mod config;
+pub mod input;
+pub mod layout;
 pub mod pty;
+pub mod select;
 pub mod term;
