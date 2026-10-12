@@ -213,3 +213,41 @@ Each entry: what was chosen and why. Newest at the bottom of each section.
   testing always matches what is on screen.
 - **Power menu**: Log Out stops the compositor; Restart/Power Off are requests
   written to init's control socket (`/run/lumen/control`), never direct syscalls.
+
+## Terminal (M6)
+
+- **Emulation core is ours, the parser is `vte`** (alacritty's state machine, `std`
+  only, no `ansi` feature): the grid, scrollback, reflow, modes, SGR, charsets,
+  OSC/DCS handling and every report are implemented in `lumen-term::term` and
+  tested against exact screens. The library part (`term`, `pty`, `config`,
+  `input`, `select`, `layout`) has no display dependencies, so it is unit-tested
+  and benchmarked headless (`lumen-termbench`), and `lumen-termdump` drives real
+  programs (busybox vi, less, top) through a PTY for tests.
+- **Grid**: rows of fixed-size cells (char, fg, bg, underline color, attribute
+  bits, underline style, hyperlink id); grapheme continuations (combining marks,
+  ZWJ sequences, variation selectors, flag pairs) live in a per-row side table, so
+  the common case stays a flat `Vec<Cell>`. Scrollback is a `VecDeque` of rows
+  whose allocations are reused when history is full; lines have stable absolute
+  numbers (`dropped + index`) so selection and search survive scrolling. Resizing
+  reflows soft-wrapped lines and tracks the cursor through the reflow.
+- **Throughput**: printable ASCII takes a fast path (no width lookup, no wide-char
+  fix-ups) and CSI parameters are collected without allocation: 75–90 MiB/s of
+  realistic output (plain, colored, Unicode, scrolling regions) in release.
+- **Rendering**: own EGL/GLES 3 bindings (a few dozen functions) instead of a GL
+  crate; text and rectangles are instanced quads; glyphs live in an R8 coverage
+  atlas (plus an sRGB RGBA atlas for emoji) at 4 subpixel phases; everything is
+  drawn into a persistent sRGB canvas texture so blending is linear (gamma-correct)
+  and only damaged regions are redrawn: rows, header and overlays are hashed every
+  frame and only changed regions are re-rendered, then the canvas is copied to the
+  window with `eglSwapBuffersWithDamage`. Box drawing, block elements, braille
+  and powerline glyphs are drawn procedurally at the exact cell size so lines join
+  seamlessly; missing glyphs show a hollow box.
+- **Smoothness**: scrolling animates (exponential approach) and touchpad flicks
+  continue kinetically; the cursor glides over short moves and blinks with fades
+  only for a while after activity (no idle wakeups); synchronized output (mode
+  2026) holds frames up to 150 ms.
+- **Security of pasted text**: bracketed paste strips ESC and C1 CSI from the
+  pasted text so it cannot terminate the bracket; OSC 52 writes are allowed by
+  default (limited to 1 MiB), reads are off by default.
+- **vttest** is not packaged for Alpine; its screens are reproduced as
+  conformance tests (`term/conformance.rs`) instead.

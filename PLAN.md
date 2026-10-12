@@ -64,14 +64,24 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 - [x] Animated maximize/tile (geometry morph), glass backdrop for dock/popovers
 
 ## M6 — Terminal (`lumen-term`)
-- [ ] PTY, vte-based parser, xterm-compatible state machine (truecolor, 256, alt screen, scroll regions, modes, mouse 1000/1002/1003/1006, bracketed paste, focus, OSC 0/2/4/8/10/11/52, DA/DSR)
-- [ ] Unicode: grapheme clusters, wide chars, emoji, font fallback chain
-- [ ] GPU renderer (EGL+GLES on Wayland): glyph atlas, instanced quads, subpixel positioning, gamma-correct blending
-- [ ] Smooth scroll with inertia, smooth cursor, scrollback ring + search, selection (word/line), clipboard
-- [ ] Tabs and splits, TOML config
-- [ ] vttest run, parser unit tests, large-file throughput benchmark
+- [x] PTY, vte-based parser, xterm-compatible state machine (truecolor, 256, alt screen, scroll regions, modes, mouse 1000/1002/1003/1006, bracketed paste, focus, OSC 0/2/4/8/10/11/52, DA/DSR)
+- [x] Unicode: grapheme clusters, wide chars, emoji, font fallback chain
+- [x] GPU renderer (EGL+GLES on Wayland): glyph atlas, instanced quads, subpixel positioning, gamma-correct blending
+- [x] Smooth scroll with inertia, smooth cursor, scrollback ring + search, selection (word/line), clipboard
+- [x] Tabs and splits, TOML config
+- [x] vttest-style conformance screens (vttest itself is not packaged for Alpine), real full-screen programs (vi, less, top) through a PTY, parser unit tests, throughput benchmark
+- [ ] QEMU: typed input partly lost under TCG (being fixed in M7's OS track)
 
-## M7 — Polish
+## M7 — Apps, shortcuts, online
+- [ ] Configurable keybindings (keybindings.toml) with launchers: terminal, browser, YouTube, Claude Code, files, editor, settings, monitor, calculator; volume keys + OSD; screenshots
+- [ ] Keyboard-shortcut cheat sheet (Super+/), generated from the live binding table
+- [ ] lumen-ui: toolkit for Lumen apps (GPU renderer shared with lumen-term, immediate-mode widgets, CSD header bar)
+- [ ] Apps on lumen-ui: Files, Text Editor, Settings, Calculator, System Monitor, Image Viewer
+- [ ] Wired networking (DHCP, DNS), PipeWire audio, D-Bus session
+- [ ] Firefox (YouTube launcher), mpv, Claude Code launcher with first-run official installer
+- [ ] Follow-ups: Wi-Fi (modules + firmware + iwd), GPU drivers with firmware
+
+## M8 — Polish
 - [ ] Profiling, frame-time HUD, screenshot regression suite, boot time, image size
 - [ ] README.md, ARCHITECTURE.md, `tools/write-usb.sh` (manual use only, refuses non-removable devices)
 - [ ] Final audit
