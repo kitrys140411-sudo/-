@@ -7,6 +7,8 @@ pub mod grid;
 mod osc;
 
 #[cfg(test)]
+mod conformance;
+#[cfg(test)]
 mod tests;
 
 use unicode_width::UnicodeWidthChar;
@@ -525,11 +527,11 @@ impl Term {
         }
         // Overwriting the first half: blank its spacer.
         let end = (x + w).min(cols);
-        if end < cols && row.cells[end - 1].has(attr::WIDE) {
+        if end > x && end < cols && row.cells[end - 1].has(attr::WIDE) {
             row.cells[end].ch = ' ';
             row.cells[end].attrs &= !attr::SPACER;
         }
-        if end < cols && row.cells[end].has(attr::SPACER) && !row.cells[end - 1].has(attr::WIDE) {
+        if end > x && end < cols && row.cells[end].has(attr::SPACER) && !row.cells[end - 1].has(attr::WIDE) {
             row.cells[end].attrs &= !attr::SPACER;
         }
         row.clear_extras(x, end);
@@ -1433,6 +1435,11 @@ impl vte::Perform for Term {
                 _ => {}
             },
             ('u', []) => self.restore_cursor(),
+            ('x', []) => {
+                // DECREQTPARM: no parity, 8 bits, 38400 baud, clock multiplier 1.
+                let kind = if arg(p, 0, 0) == 1 { 3 } else { 2 };
+                self.reply(&format!("\x1b[{kind};1;1;112;112;1;0x"));
+            }
             _ => {}
         }
         self.changed = true;

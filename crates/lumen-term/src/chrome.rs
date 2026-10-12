@@ -195,7 +195,7 @@ pub fn pane_overlays(app: &mut App, id: PaneId, area: Rect, content: Rect, focus
         } else if n == 0 {
             "no matches".to_string()
         } else {
-            format!("{}/{}", current.map(|c| n - c).unwrap_or(0), n)
+            format!("{}/{}", current.map(|c| c + 1).unwrap_or(0), n)
         };
         let (ascent, descent) = app.fonts.ui_metrics();
         let baseline = (r.y + (h - (ascent + descent)) / 2.0 + ascent).round();

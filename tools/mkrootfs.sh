@@ -39,8 +39,11 @@ for bin in lumenctl; do
     [ -f "$TARGET/$bin" ] && install -m 0755 "$TARGET/$bin" "$ROOTFS/usr/bin/$bin"
 done
 [ -f "$STATIC/lsh" ] && install -m 0755 "$STATIC/lsh" "$ROOTFS/bin/lsh"
-for bin in lumen lumen-term lumen-testclient; do
-    [ -f "$TARGET/$bin" ] && install -m 0755 "$TARGET/$bin" "$ROOTFS/usr/bin/$bin"
+# Every Lumen program of the workspace (the compositor, apps, test client).
+for f in "$TARGET"/lumen*; do
+    bin=${f##*/}
+    case $bin in *.d|lumen-init|lumenctl) continue ;; esac
+    [ -f "$f" ] && [ -x "$f" ] && install -m 0755 "$f" "$ROOTFS/usr/bin/$bin"
 done
 
 # Users and groups: the desktop user "lumen" (uid 1000).

@@ -1,0 +1,46 @@
+# lumen-term configuration. Copy to ~/.config/lumen/term.toml and edit;
+# every key is optional.
+
+[font]
+family = "JetBrains Mono"
+size = 14            # logical pixels
+line_height = 1.0    # multiple of the font's natural line height
+letter_spacing = 0.0
+
+[colors]
+foreground = "#d8dcec"
+background = "#12131a"
+cursor = "#c8d3f5"
+cursor_text = "#12131a"
+selection = "#2d3b66"
+search_match = "#5a4a1e"
+search_current = "#b07a1e"
+bold_is_bright = false
+palette = [
+  "#1d1f28", "#f26d78", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5",
+  "#414868", "#ff7a93", "#b9f27c", "#ff9e64", "#7da6ff", "#bb9af7", "#0db9d7", "#e6e9f5",
+]
+
+[cursor]
+style = "block"      # block, bar or underline
+blink = true
+smooth = true        # glide between cells
+
+[scroll]
+history = 10000
+wheel_lines = 3
+smooth = true
+
+[window]
+padding = 10
+width_cells = 100
+height_cells = 30
+always_show_tabs = false
+
+[shell]
+program = []         # empty: $SHELL, else lsh
+
+[behavior]
+osc52_write = true   # applications may set the clipboard
+osc52_read = false   # applications may read it
+copy_on_select = false

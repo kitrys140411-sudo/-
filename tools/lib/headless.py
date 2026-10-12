@@ -25,6 +25,14 @@ KEYS = {
     "k": 37, "l": 38, "shift": 42, "z": 44, "x": 45, "c": 46, "v": 47, "b": 48, "n": 49,
     "m": 50, "space": 57, "alt": 56, "f4": 62, "super": 125, "left": 105, "right": 106,
     "up": 103, "down": 108, "pageup": 104, "pagedown": 109,
+    "5": 6, "6": 7, "7": 8, "8": 9, "9": 10, "0": 11, "-": 12, "=": 13, "[": 26, "]": 27,
+    ";": 39, "'": 40, "`": 41, "\\": 43, ",": 51, ".": 52, "/": 53, "home": 102, "end": 107,
+    "f11": 87, "delete": 111,
+}
+# Characters typed with Shift on a US layout.
+SHIFTED = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+    "_": "-", "+": "=", "{": "[", "}": "]", ":": ";", '"': "'", "~": "`", "|": "\\", "<": ",", ">": ".", "?": "/",
 }
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
 
@@ -223,8 +231,13 @@ class Compositor:
 
     def type(self, text):
         for ch in text:
-            name = {" ": "space", "\n": "enter"}.get(ch, ch)
-            self.key(name)
+            name = {" ": "space", "\n": "enter", "\t": "tab"}.get(ch, ch)
+            if ch in SHIFTED:
+                self.key("shift", SHIFTED[ch])
+            elif ch.isalpha() and ch.isupper():
+                self.key("shift", ch.lower())
+            else:
+                self.key(name)
 
     # -- helpers ---------------------------------------------------------------------
     def wait(self, pred, timeout=20, what="condition"):
