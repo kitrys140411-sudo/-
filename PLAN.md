@@ -73,15 +73,22 @@ verified by running it (QEMU, screenshot, test), reviewed, and polished.
 - [ ] QEMU: typed input partly lost under TCG (being fixed in M7's OS track)
 
 ## M7 — Apps, shortcuts, online
-- [ ] Configurable keybindings (keybindings.toml) with launchers: terminal, browser, YouTube, Claude Code, files, editor, settings, monitor, calculator; volume keys + OSD; screenshots
-- [ ] Keyboard-shortcut cheat sheet (Super+/), generated from the live binding table
-- [ ] lumen-ui: toolkit for Lumen apps (GPU renderer shared with lumen-term, immediate-mode widgets, CSD header bar)
-- [ ] Apps on lumen-ui: Files, Text Editor, Settings, Calculator, System Monitor, Image Viewer
-- [ ] Wired networking (DHCP, DNS), PipeWire audio, D-Bus session
+- [x] Configurable keybindings (keybindings.toml) with launchers: terminal, browser, YouTube, Claude Code, files, editor, settings, monitor, calculator; volume keys + OSD; screenshots
+- [x] Keyboard-shortcut cheat sheet (Super+/), generated from the live binding table
+- [ ] lumen-ui: toolkit for Lumen apps (GPU renderer shared with lumen-term, immediate-mode widgets, CSD header bar, file chooser)
+- [ ] Apps on lumen-ui: Files, Text Editor, Settings (Wi-Fi, Bluetooth, sound, display), Calculator, System Monitor, Image Viewer
 - [ ] Firefox (YouTube launcher), mpv, Claude Code launcher with first-run official installer
-- [ ] Follow-ups: Wi-Fi (modules + firmware + iwd), GPU drivers with firmware
+- [ ] Keyboard layouts (us/ru, Super+Space), laptop keys (brightness), battery, suspend
 
-## M8 — Polish
+## M8 — Hardware and gaming
+- [ ] Alpine linux-lts kernel (modular, broad hardware support) with our own module loader in lumen-init and a device daemon (coldplug + hotplug, permissions)
+- [ ] Firmware (AMD/Intel/NVIDIA GPUs, Wi-Fi, Bluetooth, SOF audio, NICs), CPU microcode, zram swap
+- [ ] Wired networking (DHCP), Wi-Fi (iwd), Bluetooth (bluez), D-Bus, PipeWire audio
+- [ ] Mesa drivers (radeonsi, iris, nouveau), Vulkan (RADV, ANV, NVK), VA-API video decode
+- [ ] Compositor: XWayland, pointer constraints + relative pointer, idle inhibit, fullscreen direct scanout, primary GPU selection
+- [ ] Gamepads (Xbox, PlayStation, Switch, Steam) with Steam Input permissions, ntsync; Steam via Flatpak
+
+## M9 — Polish
 - [ ] Profiling, frame-time HUD, screenshot regression suite, boot time, image size
 - [ ] README.md, ARCHITECTURE.md, `tools/write-usb.sh` (manual use only, refuses non-removable devices)
 - [ ] Final audit
