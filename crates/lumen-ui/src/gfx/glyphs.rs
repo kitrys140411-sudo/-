@@ -1,6 +1,7 @@
-//! Fonts for the terminal: four styles of the configured monospace family
-//! (with the usual fallback chain behind each), cell metrics, cluster →
-//! glyph resolution and rasterization at subpixel phases.
+//! Glyph atlas keys, and the terminal's cell-grid fonts: four styles of the
+//! configured monospace family (with the usual fallback chain behind each),
+//! cell metrics, cluster → glyph resolution and rasterization at subpixel
+//! phases. (The toolkit's proportional UI text is in `crate::text`.)
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -52,6 +53,11 @@ pub enum GlyphKey {
     Font { style: u8, font: u16, glyph: u32, phase: u8 },
     Symbol { c: char, w: u16, h: u16 },
     Ui { font: u16, glyph: u32, phase: u8 },
+    /// A glyph of any sized font (`lumen_text::Font::key`) at a subpixel
+    /// phase: the toolkit's text.
+    Face { font: u64, glyph: u32, phase: u8 },
+    /// A symbolic icon (`crate::icons::Icon` as u16) at a pixel size.
+    Icon { icon: u16, px: u16 },
 }
 
 pub struct Fonts {

@@ -78,6 +78,7 @@ pub const GL_TEXTURE_WRAP_S: GLenum = 0x2802;
 pub const GL_TEXTURE_WRAP_T: GLenum = 0x2803;
 pub const GL_LINEAR: GLint = 0x2601;
 pub const GL_NEAREST: GLint = 0x2600;
+pub const GL_LINEAR_MIPMAP_LINEAR: GLint = 0x2703;
 pub const GL_CLAMP_TO_EDGE: GLint = 0x812F;
 pub const GL_UNPACK_ALIGNMENT: GLenum = 0x0CF5;
 pub const GL_PACK_ALIGNMENT: GLenum = 0x0D05;
@@ -122,6 +123,7 @@ unsafe extern "C" {
     pub fn glTexSubImage2D(target: GLenum, level: GLint, x: GLint, y: GLint, w: GLsizei, h: GLsizei, format: GLenum, ty: GLenum, data: *const c_void);
     pub fn glTexParameteri(target: GLenum, pname: GLenum, param: GLint);
     pub fn glPixelStorei(pname: GLenum, param: GLint);
+    pub fn glGenerateMipmap(target: GLenum);
     pub fn glGenFramebuffers(n: GLsizei, fbs: *mut GLuint);
     pub fn glDeleteFramebuffers(n: GLsizei, fbs: *const GLuint);
     pub fn glBindFramebuffer(target: GLenum, fb: GLuint);

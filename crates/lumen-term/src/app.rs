@@ -33,8 +33,8 @@ use lumen_term::layout::{self, Divider, Node, PaneId, Rect};
 use lumen_term::pty::{self, Pty};
 use lumen_term::term::{Event, Terminal};
 
-use crate::gfx::glyphs::Fonts;
-use crate::gfx::{color, Egl, RectInst, Renderer, Scene, KIND_FADE_DOWN};
+use lumen_ui::gfx::glyphs::Fonts;
+use lumen_ui::gfx::{color, Egl, RectInst, Renderer, Scene, KIND_FADE_DOWN};
 use crate::pane::{Pane, Search};
 use crate::view::{self, Colors, Damage, IRect};
 
@@ -900,7 +900,7 @@ impl App {
         self.scene.layers[layer].rects.push(RectInst::rounded(r.x, r.y, r.w, r.h, radius, c));
     }
 
-    pub fn scene_mut(&mut self) -> (&mut Scene, &mut Fonts, &mut crate::gfx::atlas::Atlas<crate::gfx::glyphs::GlyphKey>, &mut Damage) {
+    pub fn scene_mut(&mut self) -> (&mut Scene, &mut Fonts, &mut lumen_ui::gfx::atlas::Atlas<lumen_ui::gfx::glyphs::GlyphKey>, &mut Damage) {
         let r = self.renderer.as_mut().expect("renderer");
         (&mut self.scene, &mut self.fonts, &mut r.atlas, &mut self.damage)
     }

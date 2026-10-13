@@ -29,6 +29,7 @@ libc.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
 lumen-text = { path = "../lumen-text" }
+lumen-ui = { path = "../lumen-ui" }
 # Wayland client side: sctk (+ its calloop and xkbcommon integration) and
 # libwayland-egl for the EGL window surface. EGL/GLES bindings are our own.
 smithay-client-toolkit = "0.19.2"

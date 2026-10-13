@@ -33,7 +33,9 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::backend::Backend;
+use crate::background::Background;
 use crate::cursor::CursorTheme;
+use crate::keybind::KeyBindings;
 use crate::render::RenderState;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -135,6 +137,14 @@ pub struct Lumen {
     pub stats: FrameStats,
     /// Notify init (READY=1) after the first presented frame.
     pub ready_notified: bool,
+    /// Keyboard shortcuts.
+    pub keys: KeyBindings,
+    pub bg: Background,
+    /// Problems found while starting (e.g. a broken keybindings file), shown
+    /// as notifications once the desktop is on screen.
+    pub startup_notices: Vec<(String, String)>,
+    /// wpctl was found missing (logged once).
+    pub wpctl_missing: bool,
 }
 
 impl Lumen {
@@ -187,6 +197,16 @@ impl Lumen {
         seat.add_keyboard(xkb, 400, 30).expect("cannot initialize the keyboard (xkbcommon)");
 
         let theme = Theme::load();
+        let (keys, key_errors) = KeyBindings::load();
+        let startup_notices: Vec<(String, String)> = key_errors
+            .into_iter()
+            .map(|e| {
+                tracing::error!("keybindings: {e}");
+                ("Keyboard shortcuts not loaded".to_string(), format!("{e}\nThe default shortcuts are in effect."))
+            })
+            .collect();
+        tracing::info!("{} keyboard shortcuts", keys.bindings.len());
+        let bg = Background::new(&lh);
         let wm = Wm::new(&theme);
         let shell = Shell::new(&theme);
         let render = RenderState::new(&theme);
@@ -229,6 +249,10 @@ impl Lumen {
             render,
             stats: FrameStats::default(),
             ready_notified: false,
+            keys,
+            bg,
+            startup_notices,
+            wpctl_missing: false,
         }
     }
 
@@ -280,5 +304,26 @@ impl Lumen {
             }
         }
         tracing::info!("first frame presented");
+        for (title, body) in std::mem::take(&mut self.startup_notices) {
+            self.notify(&title, &body);
+        }
+    }
+
+    /// Re-read the keybinding files. On an error the current table stays
+    /// and the problem is shown as a notification.
+    pub fn reload_keybindings(&mut self) -> Result<usize, String> {
+        match KeyBindings::reload() {
+            Ok(keys) => {
+                tracing::info!("keybindings reloaded: {} shortcuts", keys.bindings.len());
+                self.keys = keys;
+                self.shell_sheet_bindings_changed();
+                Ok(self.keys.bindings.len())
+            }
+            Err(e) => {
+                tracing::error!("keybindings: {e}");
+                self.notify("Keyboard shortcuts not updated", &format!("{e}\nThe previous shortcuts stay in effect."));
+                Err(e)
+            }
+        }
     }
 }

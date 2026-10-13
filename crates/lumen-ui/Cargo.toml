@@ -1,0 +1,22 @@
+[package]
+name = "lumen-ui"
+description = "Lumen's GUI toolkit: GPU renderer (EGL/GLES 3), Wayland window runtime and immediate-mode widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lumen-ui-gallery"
+path = "src/bin/gallery.rs"
+
+[dependencies]
+libc.workspace = true
+lumen-text = { path = "../lumen-text" }
+unicode-segmentation = "1"
+# Lenient theme file parsing (the desktop's theme.toml).
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+# Wayland client side: sctk (+ its calloop and xkbcommon integration) and
+# libwayland-egl for the EGL window surface. EGL/GLES bindings are our own.
+smithay-client-toolkit = "0.19.2"
+wayland-egl = "0.32.11"
+wayland-backend = { version = "0.3", features = ["client_system"] }

@@ -1,14 +1,16 @@
 //! The desktop shell that lives inside the compositor: top panel (workspace
 //! pills, clock, power menu), overview (window grid, search, app grid,
-//! workspace thumbnails), dock, Alt+Tab switcher, notifications and the
-//! frame-time HUD.
+//! workspace thumbnails), dock, Alt+Tab switcher, notifications, the
+//! keyboard-shortcut cheat sheet, the volume OSD and the frame-time HUD.
 //!
 //! State and behavior are here; drawing is in [`render`], geometry in
 //! [`layout`]. Interactive areas are recorded while drawing (`hits`) and used
 //! by input handling, so the two can never disagree.
 
 pub mod layout;
+pub mod osd;
 pub mod render;
+pub mod sheet;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -41,9 +43,16 @@ pub enum Hit {
     Notification(u64),
     NotificationClose(u64),
     Switcher,
+    /// The cheat sheet's panel, and one of its rows (index into its rows).
+    Sheet,
+    SheetRow(usize),
 }
 
 pub const POWER_ITEMS: [&str; 3] = ["Log Out", "Restart", "Power Off"];
+
+/// Dock favorites when `$LUMEN_FAVORITES` is not set; only apps with an
+/// installed desktop entry are shown.
+pub const DEFAULT_FAVORITES: [&str; 6] = ["lumen-term", "firefox", "youtube", "claude-code", "lumen-files", "lumen-settings"];
 
 pub struct Switcher {
     /// Window ids in most-recently-used order.
@@ -83,6 +92,8 @@ pub struct Shell {
     pub hud: bool,
     /// Animation clock (the predicted presentation time of the last frame).
     pub last_anim_time: Duration,
+    /// Something was still animating after the last frame.
+    pub anim_running: bool,
     pub overview: Spring,
     pub overview_open: bool,
     /// Overview shows the app grid instead of windows (Super+A, dock button).
@@ -100,13 +111,17 @@ pub struct Shell {
     pub selected: usize,
     pub apps: Vec<App>,
     apps_stamp: u64,
-    pub favorites: Vec<String>,
+    /// Favorites from `$LUMEN_FAVORITES` (shown even without a desktop
+    /// entry); None: the installed ones of [`DEFAULT_FAVORITES`].
+    pinned: Option<Vec<String>>,
     /// 0 = hidden below the screen edge, 1 = shown.
     pub dock: Spring,
     pub popover: Option<Popover>,
     pub switcher: Option<Switcher>,
     pub notifications: Vec<Notification>,
     next_notification: u64,
+    pub sheet: Option<sheet::Sheet>,
+    pub osd: Option<osd::Osd>,
     popover_params: SpringParams,
     /// Interactive regions of the last frame, topmost first.
     pub hits: Vec<(Rect, Hit)>,
@@ -117,15 +132,14 @@ pub struct Shell {
 impl Shell {
     pub fn new(theme: &Theme) -> Shell {
         let a = &theme.animation;
-        let favorites = std::env::var("LUMEN_FAVORITES")
-            .map(|v| v.split(',').map(String::from).filter(|s| !s.is_empty()).collect())
-            .unwrap_or_else(|_| vec!["lumen-term".to_string()]);
+        let pinned = std::env::var("LUMEN_FAVORITES").ok().map(|v| v.split(',').map(String::from).filter(|s| !s.is_empty()).collect());
         let mut dock = Spring::new(1.0, theme.spring(a.popover, 0.001));
         dock.snap(1.0);
         Shell {
             super_tap: false,
             hud: std::env::var("LUMEN_HUD").is_ok(),
             last_anim_time: Duration::ZERO,
+            anim_running: false,
             overview: Spring::new(0.0, theme.spring(a.overview, 0.0005)),
             overview_open: false,
             apps_mode: false,
@@ -137,12 +151,14 @@ impl Shell {
             selected: 0,
             apps: apps::load(),
             apps_stamp: apps::dirs_stamp(),
-            favorites,
+            pinned,
             dock,
             popover: None,
             switcher: None,
             notifications: Vec::new(),
             next_notification: 1,
+            sheet: None,
+            osd: None,
             popover_params: theme.spring(a.popover, 0.002),
             hits: Vec::new(),
             pointer: (0.0, 0.0).into(),
@@ -151,7 +167,19 @@ impl Shell {
     }
 
     pub fn wants_keyboard(&self) -> bool {
-        self.overview_open || self.switcher.is_some() || self.popover.as_ref().is_some_and(|p| p.open)
+        self.overview_open
+            || self.switcher.is_some()
+            || self.popover.as_ref().is_some_and(|p| p.open)
+            || self.sheet.as_ref().is_some_and(|s| s.open)
+    }
+
+    /// Dock favorites: pinned by the environment, else the default apps
+    /// that are installed (no dock items that cannot start).
+    pub fn favorites(&self) -> Vec<String> {
+        match &self.pinned {
+            Some(v) => v.clone(),
+            None => DEFAULT_FAVORITES.iter().filter(|f| self.apps.iter().any(|a| a.id == **f)).map(|f| f.to_string()).collect(),
+        }
     }
 
     pub fn switcher_active(&self) -> bool {
@@ -258,7 +286,7 @@ impl Shell {
     /// Dock entries: favorites first, then running apps (grouped by app id).
     pub fn dock_items(&self, wm: &Wm) -> Vec<DockItem> {
         let mut items: Vec<DockItem> = self
-            .favorites
+            .favorites()
             .iter()
             .map(|fav| match self.apps.iter().find(|a| &a.id == fav) {
                 Some(a) => DockItem { id: a.id.clone(), name: a.name.clone(), icon: icon_name(a), exec: Some(a.exec.clone()), windows: vec![] },
@@ -302,7 +330,7 @@ impl Shell {
         let at_edge = self.pointer.y >= out.loc.y + out.size.h - 2.0;
         let over = self.dock.value > 0.5 && r.contains(self.pointer);
         let covered = wm.windows.iter().any(|w| w.mapped && w.ws == wm.current && w.target_geo().overlaps(r));
-        let show = self.overview_open || at_edge || over || !covered || self.popover.is_some();
+        let show = self.overview_open || at_edge || over || !covered || self.popover.is_some() || self.sheet.is_some();
         self.dock.set_target(if show { 1.0 } else { 0.0 });
     }
 
@@ -327,6 +355,18 @@ impl Shell {
             n.anim.step(dt);
         }
         self.notifications.retain(|n| n.anim.target > 0.0 || n.anim.value > 0.0 && !n.anim.is_settled());
+        if let Some(s) = &mut self.sheet {
+            s.advance(dt);
+        }
+        if self.sheet.as_ref().is_some_and(|s| s.gone()) {
+            self.sheet = None;
+        }
+        if let Some(o) = &mut self.osd {
+            o.advance(dt, now);
+        }
+        if self.osd.as_ref().is_some_and(|o| o.gone()) {
+            self.osd = None;
+        }
     }
 
     pub fn animating(&self, now: Duration) -> bool {
@@ -337,6 +377,8 @@ impl Shell {
             || self.popover.as_ref().is_some_and(|p| !p.anim.is_settled())
             || self.switcher.as_ref().is_some_and(|s| !s.appear.is_settled())
             || self.notifications.iter().any(|n| !n.anim.is_settled())
+            || self.sheet.as_ref().is_some_and(|s| s.animating())
+            || self.osd.as_ref().is_some_and(|o| o.animating())
             || self.hud
     }
 
@@ -362,13 +404,10 @@ impl Shell {
     }
 }
 
-/// Icon name for an app: its Icon= key if we draw it, else its id.
+/// Icon name for an app: the icon we draw for its Icon= key or its id, else
+/// its id (a letter tile).
 fn icon_name(a: &App) -> String {
-    match a.icon.as_str() {
-        "utilities-terminal" | "terminal" => "terminal".into(),
-        _ if a.id == "lumen-term" => "terminal".into(),
-        _ => a.id.clone(),
-    }
+    crate::icons::canonical(&a.icon).or_else(|| crate::icons::canonical(&a.id)).map(String::from).unwrap_or_else(|| a.id.clone())
 }
 
 /// Does a window with app id `key` belong to the desktop entry `id`?
@@ -416,6 +455,34 @@ impl Lumen {
             state.queue_redraw_all();
             TimeoutAction::ToDuration(until_next_minute())
         });
+    }
+
+    /// Post a notification (and make sure a frame comes when it expires,
+    /// even on an otherwise idle desktop).
+    pub fn notify(&mut self, title: &str, body: &str) -> u64 {
+        let now = self.now();
+        let id = self.shell.notify(&self.theme, title, body, now);
+        self.wake_after(Duration::from_millis(self.theme.animation.notification_timeout_ms));
+        id
+    }
+
+    /// Redraw after `d` (expiring notifications and OSDs).
+    pub fn wake_after(&mut self, d: Duration) {
+        let _ = self.lh.insert_source(Timer::from_duration(d + Duration::from_millis(16)), |_, _, state| {
+            state.queue_redraw_all();
+            TimeoutAction::Drop
+        });
+    }
+
+    /// Show the volume OSD with a new level.
+    pub fn shell_show_volume(&mut self, level: f64, muted: bool) {
+        let now = self.now();
+        match &mut self.shell.osd {
+            Some(o) => o.update(level, muted, now),
+            None => self.shell.osd = Some(osd::Osd::new(level, muted, now, self.shell.popover_params)),
+        }
+        self.wake_after(osd::SHOW_FOR);
+        self.queue_redraw_all();
     }
 
     pub fn shell_toggle_overview(&mut self, apps: bool) {
@@ -513,8 +580,7 @@ impl Lumen {
                     s.write_all(format!("{request}\n").as_bytes())
                 });
                 if let Err(e) = result {
-                    let now = self.now();
-                    self.shell.notify(&self.theme, "Cannot reach the system", &format!("{request}: {e}"), now);
+                    self.notify("Cannot reach the system", &format!("{request}: {e}"));
                 }
             }
             _ => {}
@@ -605,6 +671,10 @@ impl Lumen {
 
     /// A key while the shell owns the keyboard.
     pub fn shell_key(&mut self, sym: Keysym, utf8: Option<String>, mods: ModifiersState) {
+        if self.sheet_open() {
+            self.sheet_key(sym, utf8, mods);
+            return;
+        }
         let raw = sym.raw();
         if let Some(s) = &mut self.shell.switcher {
             let n = s.ids.len();
@@ -703,6 +773,9 @@ impl Lumen {
             self.shell.hover = hit;
             self.queue_redraw_all();
         }
+        if self.sheet_open() {
+            return true;
+        }
         if self.shell.overview_open {
             let slots = self.shell.overview_layout(&self.wm, &self.theme, out).unwrap_or_default();
             let hovered = if hit.is_some() { None } else { slots.iter().find(|(_, r)| r.contains(pos)).map(|(id, _)| *id) };
@@ -729,6 +802,10 @@ impl Lumen {
             return true;
         }
         let hit = self.shell.hit_at(pos);
+        if self.sheet_open() {
+            self.sheet_click(button, hit);
+            return true;
+        }
         if self.shell.popover.as_ref().is_some_and(|p| p.open) {
             match hit {
                 Some(Hit::PowerItem(i)) => self.shell_power(i),
@@ -795,6 +872,10 @@ impl Lumen {
     /// Scroll for the shell; returns true if consumed. In the overview the
     /// wheel switches workspaces.
     pub fn shell_scroll(&mut self, v: f64) -> bool {
+        if self.sheet_open() {
+            self.sheet_scroll(v);
+            return true;
+        }
         if !self.shell.overview_open {
             return false;
         }

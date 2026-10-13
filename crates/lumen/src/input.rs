@@ -1,4 +1,8 @@
 //! Input handling: keyboard shortcuts, pointer focus, interactive move/resize.
+//!
+//! Configurable shortcuts come from the binding table ([`crate::keybind`]);
+//! only console switching (Ctrl+Alt+F1..F12), the Super tap and Super+drag
+//! are built in.
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
@@ -9,7 +13,9 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotio
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 
+use crate::keybind::Mods;
 use crate::state::Lumen;
+use crate::volume::VolumeCmd;
 use crate::wm::{Grab, GrabKind, Layout, Tile, WORKSPACES};
 
 pub const BTN_LEFT: u32 = 0x110;
@@ -25,64 +31,42 @@ pub enum Action {
     Maximize,
     Restore,
     Tile(Tile),
+    ToggleFullscreen,
     Workspace(usize),
     WorkspaceRelative(i32),
+    MoveToWorkspace(usize),
     MoveToWorkspaceRelative(i32),
     ToggleOverview,
     ShowApps,
+    ToggleShortcuts,
     SwitcherNext { reverse: bool },
     VtSwitch(i32),
     Screenshot,
+    Volume(VolumeCmd),
     ToggleHud,
     /// A key for the shell UI (overview search, switcher, menus).
     ShellKey { sym: Keysym, utf8: Option<String>, mods: ModifiersState },
 }
 
-/// Map a key press (with modifiers) to a compositor action.
-fn shortcut(mods: &ModifiersState, sym: Keysym) -> Option<Action> {
-    let raw = sym.raw();
-    let logo = mods.logo;
+impl Action {
+    /// Actions that leave the cheat sheet open (it is modal for everything
+    /// else: launching an app or switching windows closes it).
+    fn keeps_sheet(&self) -> bool {
+        matches!(
+            self,
+            Action::None | Action::ShellKey { .. } | Action::ToggleShortcuts | Action::Volume(_) | Action::Screenshot | Action::ToggleHud
+        )
+    }
+}
+
+/// Built-in shortcuts that are not in the binding table: console switching
+/// must work whatever the configuration says.
+fn fixed_shortcut(mods: &ModifiersState, modified: Keysym) -> Option<Action> {
+    let raw = modified.raw();
     if mods.ctrl && mods.alt && (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&raw) {
         return Some(Action::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32));
     }
-    if mods.ctrl && mods.alt && raw == keysyms::KEY_BackSpace {
-        return Some(Action::Quit);
-    }
-    if mods.alt && !mods.ctrl && (raw == keysyms::KEY_Tab || raw == keysyms::KEY_ISO_Left_Tab) {
-        return Some(Action::SwitcherNext { reverse: mods.shift || raw == keysyms::KEY_ISO_Left_Tab });
-    }
-    if mods.alt && raw == keysyms::KEY_F4 {
-        return Some(Action::CloseWindow);
-    }
-    if raw == keysyms::KEY_Print {
-        return Some(Action::Screenshot);
-    }
-    if mods.ctrl && mods.alt && raw == keysyms::KEY_Left {
-        return Some(Action::WorkspaceRelative(-1));
-    }
-    if mods.ctrl && mods.alt && raw == keysyms::KEY_Right {
-        return Some(Action::WorkspaceRelative(1));
-    }
-    if !logo {
-        return None;
-    }
-    Some(match raw {
-        keysyms::KEY_Return | keysyms::KEY_t => Action::Spawn(vec!["lumen-term".into()]),
-        keysyms::KEY_q => Action::CloseWindow,
-        keysyms::KEY_Up => Action::Maximize,
-        keysyms::KEY_Down => Action::Restore,
-        keysyms::KEY_Left => Action::Tile(Tile::Left),
-        keysyms::KEY_Right => Action::Tile(Tile::Right),
-        keysyms::KEY_Page_Up if mods.shift => Action::MoveToWorkspaceRelative(-1),
-        keysyms::KEY_Page_Down if mods.shift => Action::MoveToWorkspaceRelative(1),
-        keysyms::KEY_Page_Up => Action::WorkspaceRelative(-1),
-        keysyms::KEY_Page_Down => Action::WorkspaceRelative(1),
-        keysyms::KEY_1..=keysyms::KEY_4 => Action::Workspace((raw - keysyms::KEY_1) as usize),
-        keysyms::KEY_a => Action::ShowApps,
-        keysyms::KEY_s => Action::ToggleOverview,
-        keysyms::KEY_h => Action::ToggleHud,
-        _ => return None,
-    })
+    None
 }
 
 fn is_super(sym: Keysym) -> bool {
@@ -123,12 +107,12 @@ impl Lumen {
             let sym = handle.modified_sym();
             let raw_sym = handle.raw_syms().first().copied().unwrap_or(sym);
             if state == KeyState::Pressed {
-                if is_super(raw_sym) {
-                    lumen.shell.super_tap = true;
-                } else {
-                    lumen.shell.super_tap = false;
-                }
-                if let Some(a) = shortcut(mods, raw_sym).or_else(|| shortcut(mods, sym)) {
+                lumen.shell.super_tap = is_super(raw_sym);
+                let bound = fixed_shortcut(mods, sym).or_else(|| {
+                    let latin = handle.raw_latin_sym_or_raw_current_sym().unwrap_or(raw_sym);
+                    lumen.keys.lookup(Mods::from(mods), latin, raw_sym, sym).map(|b| b.action.clone())
+                });
+                if let Some(a) = bound {
                     lumen.suppressed_keys.push(raw_sym);
                     return FilterResult::Intercept(a);
                 }
@@ -159,6 +143,9 @@ impl Lumen {
     }
 
     pub fn run_action(&mut self, action: Action) {
+        if !action.keeps_sheet() && self.sheet_open() {
+            self.shell_close_sheet();
+        }
         let (work, out) = (self.work_area(), self.output_rect());
         let focused = self.wm.focused;
         match action {
@@ -193,30 +180,46 @@ impl Lumen {
                     self.wm.set_layout(id, layout, work, out);
                 }
             }
-            Action::Workspace(n) => self.switch_workspace(n),
+            Action::ToggleFullscreen => {
+                if let Some(id) = focused {
+                    let layout = match self.wm.get(id).map(|w| w.layout) {
+                        Some(Layout::Fullscreen { .. }) => Layout::Floating,
+                        _ => Layout::Fullscreen { restore: work },
+                    };
+                    self.wm.set_layout(id, layout, work, out);
+                }
+            }
+            Action::Workspace(n) => self.switch_workspace(n.min(WORKSPACES - 1)),
             Action::WorkspaceRelative(d) => {
                 let n = (self.wm.current as i32 + d).clamp(0, WORKSPACES as i32 - 1) as usize;
                 self.switch_workspace(n);
             }
+            Action::MoveToWorkspace(n) => self.move_focused_to_workspace(n.min(WORKSPACES - 1)),
             Action::MoveToWorkspaceRelative(d) => {
-                if let Some(id) = focused {
-                    let n = (self.wm.current as i32 + d).clamp(0, WORKSPACES as i32 - 1) as usize;
-                    if let Some(w) = self.wm.get_mut(id) {
-                        w.ws = n;
-                    }
-                    self.switch_workspace(n);
-                    self.focus_window(Some(id));
-                }
+                let n = (self.wm.current as i32 + d).clamp(0, WORKSPACES as i32 - 1) as usize;
+                self.move_focused_to_workspace(n);
             }
             Action::ToggleOverview => self.shell_toggle_overview(false),
             Action::ShowApps => self.shell_toggle_overview(true),
+            Action::ToggleShortcuts => self.shell_toggle_sheet(),
             Action::SwitcherNext { reverse } => self.shell_switcher_next(reverse),
             Action::VtSwitch(vt) => self.backend.change_vt(vt),
             Action::Screenshot => self.screenshot_to_file(),
+            Action::Volume(cmd) => self.bg.run(move || crate::background::Done::Volume(crate::volume::run(cmd))),
             Action::ToggleHud => self.shell.hud = !self.shell.hud,
             Action::ShellKey { sym, utf8, mods } => self.shell_key(sym, utf8, mods),
         }
         self.queue_redraw_all();
+    }
+
+    /// Send the focused window to workspace `n` and follow it there.
+    fn move_focused_to_workspace(&mut self, n: usize) {
+        let Some(id) = self.wm.focused else { return };
+        if let Some(w) = self.wm.get_mut(id) {
+            w.ws = n;
+        }
+        self.switch_workspace(n);
+        self.focus_window(Some(id));
     }
 
     pub fn switch_workspace(&mut self, n: usize) {
@@ -259,7 +262,7 @@ impl Lumen {
             }
             Err(e) => {
                 tracing::warn!("cannot spawn {prog}: {e}");
-                self.shell.notify(&self.theme, "Cannot start application", &format!("{prog}: {e}"), self.now());
+                self.notify("Cannot start application", &format!("{prog}: {e}"));
             }
         }
     }
@@ -344,6 +347,11 @@ impl Lumen {
         self.refresh_pointer_focus();
         let Some(pointer) = self.seat.get_pointer() else { return };
         let pressed = state == ButtonState::Pressed;
+        // Super+click (move/resize) is not a Super tap: releasing Super must
+        // not open the overview.
+        if pressed {
+            self.shell.super_tap = false;
+        }
 
         if !pressed {
             if self.wm.grab.as_ref().is_some_and(|g| g.button == button) {
@@ -382,6 +390,7 @@ impl Lumen {
     }
 
     fn on_axis<B: InputBackend>(&mut self, evt: B::PointerAxisEvent) {
+        self.shell.super_tap = false;
         let h = evt.amount(Axis::Horizontal).unwrap_or_else(|| evt.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0);
         let v = evt.amount(Axis::Vertical).unwrap_or_else(|| evt.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
         if self.shell_scroll(v) {

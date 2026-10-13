@@ -4,7 +4,6 @@
 
 mod app;
 mod chrome;
-mod gfx;
 mod handlers;
 mod pane;
 mod view;

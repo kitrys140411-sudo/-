@@ -9,6 +9,7 @@ use smithay::backend::renderer::gles::{GlesPixelProgram, GlesRenderer, Uniform};
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle};
 
+use super::sheet::{self, FlowItem};
 use super::{dock_cell, dock_rect, layout, Hit, Rect, POWER_ITEMS};
 use crate::render::elements::{enclose, Image, Shape};
 use crate::render::{LumenElement, SceneCtx};
@@ -90,14 +91,26 @@ impl Ui<'_, '_, '_> {
 
     #[allow(clippy::too_many_arguments)]
     fn rect(&mut self, key: &'static str, i: u64, r: Rect, radius: f64, fill: Color, border: Option<(Color, f64)>, alpha: f32) {
+        self.rect_gradient(key, i, r, radius, (fill, fill), border, alpha);
+    }
+
+    /// A rounded rectangle with a vertical gradient (top, bottom).
+    #[allow(clippy::too_many_arguments)]
+    fn rect_gradient(&mut self, key: &'static str, i: u64, r: Rect, radius: f64, fill: (Color, Color), border: Option<(Color, f64)>, alpha: f32) {
         if alpha <= 0.0 {
             return;
         }
         let p = self.phys(r);
         let border = border.map(|(c, w)| (c, w * self.scale));
         let shape = self.ctx.shell.shapes.get(&self.output, key, i);
-        let s = rect_shape(shape, &self.prog, p, radius * self.scale, fill, fill, border, alpha);
+        let s = rect_shape(shape, &self.prog, p, radius * self.scale, fill.0, fill.1, border, alpha);
         self.elements.push(LumenElement::Shape(s.clone()));
+    }
+
+    /// Round a logical coordinate to whole physical pixels (crisp edges at
+    /// any scale).
+    fn snap(&self, v: f64) -> f64 {
+        (v * self.scale).round() / self.scale
     }
 
     /// A frosted-glass pane: what is behind it blurred and tinted (or just
@@ -180,6 +193,11 @@ pub fn overlay_elements(
     let fullscreen = overview <= 0.0 && ui.ctx.wm.fullscreen_on_top();
     if ui.ctx.shell.hud {
         hud(&mut ui);
+    }
+    osd(&mut ui);
+    sheet(&mut ui);
+    if ui.ctx.shell.sheet.is_none() {
+        ui.ctx.shell.shapes.retain(|k, _| !SHEET_SHAPES.contains(&k));
     }
     popover(&mut ui);
     notifications(&mut ui);
@@ -567,6 +585,360 @@ fn overview_ui(ui: &mut Ui, t: f64) {
             }
         }
     }
+}
+
+/// Shape keys of the cheat sheet (dropped when it is gone).
+const SHEET_SHAPES: [&str; 9] =
+    ["sheet-cap", "sheet-row", "sheet-sep", "sheet-search", "sheet-caret", "sheet-bg", "sheet-dim", "sheet-thumb", "sheet-track"];
+
+/// Measured layout of one cheat-sheet row.
+struct RowLayout {
+    row: usize,
+    /// Width the label may use and its height (it wraps to two lines).
+    label_max: f64,
+    label_h: f64,
+    /// Key cap widths per chord, and the chords packed into lines.
+    caps: Vec<Vec<f64>>,
+    lines: Vec<Vec<usize>>,
+    line_w: Vec<f64>,
+    h: f64,
+}
+
+/// A group of rows under one heading.
+struct GroupLayout {
+    name: String,
+    rows: Vec<RowLayout>,
+}
+
+struct SheetMetrics {
+    cap_h: f64,
+    cap_pad: f64,
+    cap_gap: f64,
+    or_w: f64,
+    line_gap: f64,
+    group_head: f64,
+    row_min: f64,
+}
+
+fn sheet_styles(theme: &crate::theme::Theme) -> (Style, Style, Style, Style, Style) {
+    let c = &theme.colors;
+    (
+        Style::new(19.0, c.text).weight(Weight::SemiBold),
+        Style::new(11.5, c.text_dim).weight(Weight::SemiBold),
+        Style::new(13.5, c.text),
+        Style::new(12.0, c.text).weight(Weight::Medium),
+        Style::new(11.5, c.text_dim),
+    )
+}
+
+/// Measure the rows `which` of the sheet, grouped, for columns `col_w` wide.
+fn sheet_groups(ui: &mut Ui, rows: &[super::sheet::SheetRow], which: &[usize], col_w: f64, m: &SheetMetrics) -> Vec<GroupLayout> {
+    let (_, _, label_style, cap_style, _) = sheet_styles(ui.ctx.theme);
+    let g = ui.ctx.theme.geometry.grid;
+    let mut groups: Vec<GroupLayout> = Vec::new();
+    for &i in which {
+        let row = &rows[i];
+        let caps: Vec<Vec<f64>> = row
+            .chords
+            .iter()
+            .map(|c| c.iter().map(|k| (ui.measure(k, &cap_style, None, Some(1)).0 + m.cap_pad * 2.0).max(m.cap_h).ceil()).collect())
+            .collect();
+        let chord_w: Vec<f64> = caps.iter().map(|c| c.iter().sum::<f64>() + m.cap_gap * (c.len().max(1) - 1) as f64).collect();
+        let label_w = ui.measure(&row.label, &label_style, None, Some(1)).0;
+        let keys_max = col_w - label_w.min(col_w * 0.5) - g * 2.0;
+        let lines = super::sheet::pack(&chord_w, keys_max, m.or_w);
+        let line_w: Vec<f64> = lines.iter().map(|l| l.iter().map(|&c| chord_w[c]).sum::<f64>() + m.or_w * (l.len() - 1) as f64).collect();
+        let keys_w = line_w.iter().copied().fold(0.0, f64::max);
+        let label_max = (col_w - keys_w - g * 2.0).max(g * 8.0);
+        let (_, label_h) = ui.measure(&row.label, &label_style, Some(label_max), Some(2));
+        let n = lines.len() as f64;
+        let h = (n * m.cap_h + (n - 1.0) * m.line_gap + g).max(label_h + g * 1.5).max(m.row_min);
+        let layout = RowLayout { row: i, label_max, label_h, caps, lines, line_w, h };
+        match groups.last_mut().filter(|gr| gr.name == row.group) {
+            Some(gr) => gr.rows.push(layout),
+            None => groups.push(GroupLayout { name: row.group.clone(), rows: vec![layout] }),
+        }
+    }
+    groups
+}
+
+/// The keyboard-shortcut cheat sheet: a centered glass panel with the
+/// binding table in grouped columns, key caps, and a filter field.
+fn sheet(ui: &mut Ui) {
+    let Some(sh) = ui.ctx.shell.sheet.as_ref() else { return };
+    let t = sh.anim.value.clamp(0.0, 1.1);
+    if t <= 0.001 {
+        return;
+    }
+    let (rows, visible, query, selected, scroll, open) =
+        (sh.rows.clone(), sh.visible.clone(), sh.query.clone(), sh.selected_row(), sh.scroll.value, sh.open);
+    let theme = ui.ctx.theme;
+    let c = &theme.colors;
+    let g = theme.geometry.grid;
+    let out = ui.out;
+    let alpha = t.min(1.0) as f32;
+    let (title_style, group_style, label_style, cap_style, or_style) = sheet_styles(theme);
+    let or_text_w = ui.measure("or", &or_style, None, Some(1)).0;
+    let m = SheetMetrics {
+        cap_h: g * 3.0,
+        cap_pad: g,
+        cap_gap: g * 0.5,
+        or_w: or_text_w + g * 2.0,
+        line_gap: g * 0.75,
+        group_head: g * 3.5,
+        row_min: g * 4.0,
+    };
+
+    // Panel size from the unfiltered table, so it does not jump while typing.
+    let margin = g * 4.0;
+    let pad = g * 4.0;
+    let col_gap = g * 5.0;
+    let all: Vec<usize> = (0..rows.len()).collect();
+    let n_groups = {
+        let mut names: Vec<&str> = rows.iter().map(|r| r.group.as_str()).collect();
+        names.dedup();
+        names.len().max(1)
+    };
+    let max_w = (out.size.w - margin * 2.0).min(g * 150.0);
+    let min_col = g * 38.0;
+    let cols = (((max_w - pad * 2.0 + col_gap) / (min_col + col_gap)).floor() as usize).clamp(1, n_groups);
+    let col_w = ((max_w - pad * 2.0 - col_gap * (cols - 1) as f64) / cols as f64).min(g * 48.0).floor();
+    let panel_w = col_w * cols as f64 + col_gap * (cols - 1) as f64 + pad * 2.0;
+    let group_gap = g * 3.0;
+    let flow_items = |groups: &[GroupLayout]| -> Vec<FlowItem> {
+        groups.iter().flat_map(|gr| sheet::group_items(&gr.rows.iter().map(|r| r.h).collect::<Vec<_>>(), m.group_head)).collect()
+    };
+    let all_items = flow_items(&sheet_groups(ui, &rows, &all, col_w, &m));
+    let column_h = sheet::balanced_height(&all_items, cols, m.group_head, group_gap);
+    let all_h = sheet::flow(&all_items, cols, column_h, m.group_head, group_gap).tallest;
+
+    // Header: icon and title, filter field to the right (or below when narrow).
+    let title = "Keyboard Shortcuts";
+    let (title_w, title_h) = ui.measure(title, &title_style, None, Some(1));
+    let icon_sz = g * 4.0;
+    let title_block = icon_sz + g * 1.5 + title_w;
+    let field_h = g * 5.0;
+    let stacked = panel_w - pad * 2.0 < title_block + g * 4.0 + g * 26.0;
+    let header_h = if stacked { field_h + g * 1.5 + field_h } else { field_h };
+    let chrome_h = pad + header_h + g * 3.0 + pad;
+    let max_h = out.size.h - theme.geometry.panel_height - margin * 2.0;
+    let view_h = all_h.min((max_h - chrome_h).max(g * 12.0)).max(g * 12.0);
+    let panel_h = chrome_h + view_h;
+    let px = ui.snap(out.loc.x + (out.size.w - panel_w) / 2.0);
+    let py = ui.snap((out.loc.y + (out.size.h - panel_h) / 2.0).max(out.loc.y + theme.geometry.panel_height + g));
+    let panel = layout::rect(px, py, panel_w, panel_h);
+
+    // Grow in from 96 % about the panel's center.
+    let k = 0.96 + 0.04 * t.min(1.0);
+    let (cx, cy) = (px + panel_w / 2.0, py + panel_h / 2.0);
+    let tf = |r: Rect| layout::rect(cx + (r.loc.x - cx) * k, cy + (r.loc.y - cy) * k, r.size.w * k, r.size.h * k);
+    let tp = |x: f64, y: f64| Point::<f64, Logical>::from((cx + (x - cx) * k, cy + (y - cy) * k));
+
+    // Content: the matching rows flowed into the columns, read top to
+    // bottom, left to right (a filtered list stays in the first column).
+    let view_top = py + pad + header_h + g * 3.0;
+    let view_bottom = view_top + view_h;
+    let groups = sheet_groups(ui, &rows, &visible, col_w, &m);
+    let flowed = sheet::flow(&flow_items(&groups), cols, column_h, m.group_head, group_gap);
+    let (placed, content_h) = (&flowed.pos, flowed.tallest);
+    let fade = g * 2.5;
+    let edge_alpha = |top: f64, bottom: f64| -> f32 {
+        let a_top = 1.0 - ((view_top - top) / fade).clamp(0.0, 1.0);
+        let a_bottom = 1.0 - ((bottom - view_bottom) / fade).clamp(0.0, 1.0);
+        (a_top * a_bottom) as f32
+    };
+    let hover = match ui.ctx.shell.hover {
+        Some(Hit::SheetRow(r)) => Some(r),
+        _ => None,
+    };
+    let one_line = ui.measure("Ag", &label_style, None, Some(1)).1;
+    let mut spans = Vec::new();
+    let mut highlights: Vec<(Rect, bool, f32)> = Vec::new();
+    let mut seps: Vec<(Rect, f32)> = Vec::new();
+    let mut cap_i = 0u64;
+    let mut item = 0;
+    for gr in &groups {
+        let heading = gr.name.to_uppercase();
+        let (_, gh) = ui.measure(&heading, &group_style, None, Some(1));
+        let draw_heading = |ui: &mut Ui, col: usize, top: f64| {
+            let (x, y) = (px + pad + col as f64 * (col_w + col_gap), view_top - scroll + top);
+            let a = edge_alpha(y, y + gh) * alpha;
+            if a > 0.0 {
+                ui.text(&heading, &group_style, tp(x, y + g * 0.5), Some(col_w), Some(1), a);
+            }
+        };
+        let Some(&(col, gy)) = placed.get(item) else { break };
+        draw_heading(ui, col, gy);
+        item += 1;
+        for (ri, rl) in gr.rows.iter().enumerate() {
+            let Some(&(col, ry)) = placed.get(item) else { break };
+            if flowed.continued.contains(&item) {
+                draw_heading(ui, col, ry - m.group_head);
+            }
+            let next_col = placed.get(item + 1).map(|p| p.0);
+            item += 1;
+            let x = px + pad + col as f64 * (col_w + col_gap);
+            let y = view_top - scroll + ry;
+            let row = &rows[rl.row];
+            spans.push((rl.row, y - (view_top - scroll), y + rl.h - (view_top - scroll)));
+            let a = edge_alpha(y, y + rl.h) * alpha;
+            let row_rect = layout::rect(x - g, y, col_w + g * 2.0, rl.h);
+            if a > 0.0 {
+                // A one-line label sits level with the first line of keys; a
+                // wrapped one and the keys are centered in the row.
+                let keys_h = rl.lines.len() as f64 * (m.cap_h + m.line_gap) - m.line_gap;
+                let keys_top = if rl.label_h > one_line * 1.5 { y + (rl.h - keys_h) / 2.0 } else { y + g * 0.5 };
+                let label_top = if rl.label_h > one_line * 1.5 { y + (rl.h - rl.label_h) / 2.0 } else { keys_top + (m.cap_h - rl.label_h) / 2.0 };
+                ui.text(&row.label, &label_style, tp(x, label_top), Some(rl.label_max), Some(2), a);
+                for (li, line) in rl.lines.iter().enumerate() {
+                    let ly = ui.snap(keys_top + li as f64 * (m.cap_h + m.line_gap));
+                    let mut kx = x + col_w - rl.line_w[li];
+                    for (n, &chord) in line.iter().enumerate() {
+                        if n > 0 {
+                            let (ow, oh) = ui.measure("or", &or_style, None, Some(1));
+                            ui.text("or", &or_style, tp(kx + (m.or_w - ow) / 2.0, ly + (m.cap_h - oh) / 2.0), None, Some(1), a);
+                            kx += m.or_w;
+                        }
+                        for (cap, &w) in row.chords[chord].iter().zip(&rl.caps[chord]) {
+                            let r = layout::rect(ui.snap(kx), ly, w, m.cap_h);
+                            let (tw, th) = ui.measure(cap, &cap_style, None, Some(1));
+                            ui.text(cap, &cap_style, tp(r.loc.x + (w - tw) / 2.0, r.loc.y + (m.cap_h - th) / 2.0), None, Some(1), a);
+                            let top = Color::rgba(1.0, 1.0, 1.0, 0.13);
+                            let bottom = Color::rgba(1.0, 1.0, 1.0, 0.07);
+                            ui.rect_gradient("sheet-cap", cap_i, tf(r), g * 0.75 * k, (top, bottom), Some((Color::rgba(1.0, 1.0, 1.0, 0.16), 1.0)), a);
+                            cap_i += 1;
+                            kx += w + m.cap_gap;
+                        }
+                        kx -= m.cap_gap;
+                    }
+                }
+                let on = Some(rl.row) == selected;
+                if on || hover == Some(rl.row) {
+                    highlights.push((row_rect, on, a));
+                }
+                // Separators between rows of a group, within a column.
+                if ri + 1 < gr.rows.len() && next_col == Some(col) {
+                    seps.push((layout::rect(x, y + rl.h - 0.5, col_w, 1.0), a));
+                }
+                if a > 0.5 {
+                    let vis = layout::rect(row_rect.loc.x, row_rect.loc.y.max(view_top), row_rect.size.w, (y + rl.h).min(view_bottom) - y.max(view_top));
+                    if vis.size.h > 0.0 && open {
+                        ui.hit(tf(vis), Hit::SheetRow(rl.row));
+                    }
+                }
+            }
+        }
+    }
+    for (i, (r, on, a)) in highlights.into_iter().enumerate() {
+        let fill = if on { c.accent.with_alpha(0.22) } else { Color::rgba(1.0, 1.0, 1.0, 0.06) };
+        let border = on.then_some((c.accent.with_alpha(0.45), 1.0));
+        ui.rect("sheet-row", i as u64, tf(r), g * k, fill, border, a);
+    }
+    for (i, (r, a)) in seps.into_iter().enumerate() {
+        ui.rect("sheet-sep", i as u64, tf(r), 0.0, Color::rgba(1.0, 1.0, 1.0, 0.06), None, a);
+    }
+    if visible.is_empty() {
+        let style = Style::new(14.0, c.text_dim).align(Align::Center);
+        let msg = format!("No shortcuts match \u{201c}{}\u{201d}", query.trim());
+        ui.text(&msg, &style, tp(px + pad, view_top + g * 4.0), Some(panel_w - pad * 2.0), Some(1), alpha);
+    }
+    if let Some(s) = ui.ctx.shell.sheet.as_mut() {
+        s.content_h = content_h;
+        s.view_h = view_h;
+        s.row_spans = spans;
+    }
+    // A thin scroll indicator in the right margin when the content overflows.
+    if content_h > view_h + 0.5 {
+        let track = layout::rect(px + panel_w - pad / 2.0 - g * 0.25, view_top, g * 0.5, view_h);
+        let thumb_h = (view_h * view_h / content_h).max(g * 4.0);
+        let max_scroll = (content_h - view_h).max(1.0);
+        let thumb_y = view_top + (scroll / max_scroll).clamp(0.0, 1.0) * (view_h - thumb_h);
+        let thumb = layout::rect(track.loc.x, thumb_y, track.size.w, thumb_h);
+        ui.rect("sheet-thumb", 0, tf(thumb), g * 0.25 * k, Color::rgba(1.0, 1.0, 1.0, 0.32), None, alpha);
+        ui.rect("sheet-track", 0, tf(track), g * 0.25 * k, Color::rgba(1.0, 1.0, 1.0, 0.07), None, alpha);
+    }
+
+    // Header.
+    let hy = py + pad;
+    ui.icon("input-keyboard", tf(layout::rect(px + pad, hy + (field_h - icon_sz) / 2.0, icon_sz, icon_sz)), alpha, "");
+    ui.text(title, &title_style, tp(px + pad + icon_sz + g * 1.5, hy + (field_h - title_h) / 2.0), None, Some(1), alpha);
+    let field = if stacked {
+        layout::rect(px + pad, hy + field_h + g * 1.5, panel_w - pad * 2.0, field_h)
+    } else {
+        let w = (g * 36.0).min(panel_w - pad * 2.0 - title_block - g * 4.0);
+        layout::rect(px + panel_w - pad - w, hy, w, field_h)
+    };
+    let search_style = Style::new(14.0, if query.is_empty() { c.text_dim } else { c.text });
+    let icon = layout::rect(field.loc.x + g * 1.5, field.loc.y + (field_h - g * 2.25) / 2.0, g * 2.25, g * 2.25);
+    let text_x = icon.loc.x + icon.size.w + g;
+    let shown = if query.is_empty() { "Type to filter" } else { &query };
+    let max_text = field.size.w - (text_x - field.loc.x) - g * 2.0;
+    let (qw, qh) = ui.measure(shown, &search_style, Some(max_text), Some(1));
+    ui.text(shown, &search_style, tp(text_x, field.loc.y + (field_h - qh) / 2.0), Some(max_text), Some(1), alpha);
+    let caret_x = if query.is_empty() { text_x } else { text_x + qw.min(max_text) + 1.0 };
+    ui.rect("sheet-caret", 0, tf(layout::rect(caret_x, field.loc.y + (field_h - qh * 0.9) / 2.0, 1.5, qh * 0.9)), 0.0, c.accent, None, alpha);
+    ui.icon("search", tf(icon), alpha * 0.7, "");
+    ui.rect("sheet-search", 0, tf(field), field_h / 2.0 * k, c.surface.with_alpha(0.7), Some((c.border, 1.0)), alpha);
+
+    // The panel and a dim layer over the desktop (it is modal).
+    let p = tf(panel);
+    if open {
+        ui.hit(p, Hit::Sheet);
+    }
+    // The frosted backdrop leads the content in (and trails it out), so what
+    // is behind is blurred before the text is legible.
+    let backdrop = (t * 1.7).min(1.0) as f32;
+    ui.glass("sheet-bg", 0, p, theme.geometry.popover_radius * 1.5 * k, c.glass_surface, Some((c.border, 1.0)), backdrop);
+    ui.rect("sheet-dim", 0, out, 0.0, Color::rgba(0.0, 0.0, 0.0, 0.32), None, backdrop);
+}
+
+/// Volume OSD: a glass pill near the bottom with icon, level bar and value.
+fn osd(ui: &mut Ui) {
+    let Some(o) = ui.ctx.shell.osd.as_ref() else { return };
+    let t = o.anim.value.clamp(0.0, 1.1);
+    if t <= 0.001 {
+        return;
+    }
+    let (level, bar, muted, icon_name) = (o.level, o.bar.value.max(0.0), o.muted, o.icon());
+    let theme = ui.ctx.theme;
+    let c = &theme.colors;
+    let g = theme.geometry.grid;
+    let out = ui.out;
+    let alpha = t.min(1.0) as f32;
+    let (w, h) = (g * 34.0, g * 6.0);
+    let dy = (1.0 - t.min(1.0)) * g * 2.0;
+    let x = ui.snap(out.loc.x + (out.size.w - w) / 2.0);
+    let y = ui.snap(out.loc.y + out.size.h - layout::dock_height(theme) - g * 6.0 - h + dy);
+    let pill = layout::rect(x, y, w, h);
+    let isz = g * 3.0;
+    ui.icon(icon_name, layout::rect(x + g * 2.0, y + (h - isz) / 2.0, isz, isz), alpha, "");
+    let value_style = Style::new(13.0, c.text).weight(Weight::SemiBold).align(Align::Right);
+    let value_w = g * 6.0;
+    let text = if muted { "Muted".to_string() } else { format!("{}%", (level * 100.0).round() as i64) };
+    let (_, th) = ui.measure(&text, &value_style, Some(value_w), Some(1));
+    ui.text(&text, &value_style, Point::from((x + w - g * 2.0 - value_w, y + (h - th) / 2.0)), Some(value_w), Some(1), alpha);
+    // Track 0..100 %, or 0..150 % while over-amplified (with a mark at 100 %).
+    let bx = x + g * 2.0 + isz + g * 1.5;
+    let bw = x + w - g * 2.0 - value_w - g * 1.5 - bx;
+    let bh = g * 0.75;
+    let by = ui.snap(y + (h - bh) / 2.0);
+    let max = if level > 1.0 + 1e-6 { 1.5 } else { 1.0 };
+    let frac = (bar / max).clamp(0.0, 1.0);
+    let fill_a = if muted { alpha * 0.35 } else { alpha };
+    if max > 1.0 {
+        let mark = bx + bw / max;
+        ui.rect("osd-mark", 0, layout::rect(mark - 0.75, by - g * 0.5, 1.5, bh + g), 0.75, c.text.with_alpha(0.6), None, alpha);
+        let over = (bx + bw * frac - mark).max(0.0);
+        if over > 0.0 {
+            ui.rect("osd-over", 0, layout::rect(mark, by, over.max(bh), bh), bh / 2.0, c.danger, None, fill_a);
+        }
+    }
+    let normal_w = (bw * frac).min(bw / max);
+    if normal_w > 0.0 {
+        ui.rect("osd-fill", 0, layout::rect(bx, by, normal_w.max(bh), bh), bh / 2.0, c.accent, None, fill_a);
+    }
+    ui.rect("osd-track", 0, layout::rect(bx, by, bw, bh), bh / 2.0, Color::rgba(1.0, 1.0, 1.0, 0.16), None, alpha);
+    ui.glass("osd-bg", 0, pill, h / 2.0, c.glass_surface, Some((c.border, 1.0)), alpha);
 }
 
 /// Frame-time HUD: render time (bars) and presentation intervals (line) of the

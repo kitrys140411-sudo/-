@@ -55,6 +55,12 @@ impl Canvas {
         self.blend_mask(&m, color);
     }
 
+    /// Fill with the even-odd rule: overlapping contours cut holes.
+    pub fn fill_even_odd(&mut self, path: &Path, color: [f32; 4]) {
+        let m = path.rasterize(&self.lib, self.width, self.height, true);
+        self.blend_mask(&m, color);
+    }
+
     pub fn stroke(&mut self, path: &Path, width: f32, closed: bool, color: [f32; 4]) {
         let m = path.stroke(&self.lib, self.width, self.height, width * self.scale, closed);
         self.blend_mask(&m, color);

@@ -856,6 +856,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "lumen-text",
+ "lumen-ui",
  "serde",
  "smithay-client-toolkit",
  "toml",
@@ -880,6 +881,19 @@ dependencies = [
  "freetype-sys",
  "harfbuzz-sys",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "lumen-ui"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "lumen-text",
+ "smithay-client-toolkit",
+ "toml",
+ "unicode-segmentation",
+ "wayland-backend",
+ "wayland-egl",
 ]
 
 [[package]]

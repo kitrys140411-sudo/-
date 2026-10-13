@@ -6,7 +6,7 @@ use std::time::Instant;
 use lumen_term::layout::{PaneId, Rect};
 
 use crate::app::{App, HeaderHits};
-use crate::gfx::{color, RectInst};
+use lumen_ui::gfx::{color, RectInst};
 use crate::view::{self, key_of, IRect};
 
 type Rgb = (u8, u8, u8);

@@ -289,3 +289,22 @@ class Compositor:
                 self.proc.kill()
                 self.proc.wait()
         self._log.close()
+
+
+# Keys used by the shortcut tests (evdev codes; KEY_SYSRQ is the Print key).
+KEYS.update({
+    "f1": 59, "f2": 60, "print": 99, "mute": 113, "volumedown": 114, "volumeup": 115, "calc": 140,
+})
+
+
+def wait_for_file(pattern, directory, timeout=20):
+    """Path of the first file in `directory` whose name matches `pattern`."""
+    rx = re.compile(pattern)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.isdir(directory):
+            for name in sorted(os.listdir(directory)):
+                if rx.fullmatch(name):
+                    return os.path.join(directory, name)
+        time.sleep(0.05)
+    raise AssertionError(f"no file /{pattern}/ in {directory}")

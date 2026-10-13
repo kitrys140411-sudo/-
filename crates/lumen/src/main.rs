@@ -4,12 +4,14 @@
 mod anim;
 mod apps;
 mod backend;
+mod background;
 mod cursor;
 mod cursor_art;
 mod handlers;
 mod icons;
 mod input;
 mod ipc;
+mod keybind;
 mod png;
 mod render;
 mod selection;
@@ -18,6 +20,7 @@ mod state;
 mod text;
 mod theme;
 mod vector;
+mod volume;
 mod wm;
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
@@ -39,8 +42,8 @@ const USAGE: &str = "usage: lumen [--backend auto|udev|winit|headless] [--size W
   --scale     output scale for headless (others use LUMEN_SCALE or the display's DPI)
   -- cmd      program to start once the compositor is running
 
-environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_SCALE, LUMEN_IPC, LUMEN_HUD,
-             XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS, XCURSOR_THEME, XCURSOR_SIZE";
+environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_FAVORITES, LUMEN_SCALE,
+             LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS, XCURSOR_THEME, XCURSOR_SIZE";
 
 struct Args {
     backend: String,

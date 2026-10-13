@@ -1,0 +1,275 @@
+# Lumen keyboard shortcuts.
+#
+# These are the defaults. To change them, create ~/.config/lumen/keybindings.toml
+# with only the entries you want to add or change, then run
+# `lumenctl desktop reload-keybindings` (or log in again). An entry there binds
+# its keys to its action, replacing whatever they did before:
+#
+#   [[bind]]
+#   keys    = "Super+Return"            # one chord or a list of chords
+#   action  = "spawn"
+#   command = "foot"                    # a command line, or a list of words
+#   label   = "Terminal"                # shown in the shortcut overview (Super+/)
+#   group   = "Apps"                    # Apps, Windows, Workspaces or System
+#
+#   [[bind]]
+#   keys   = ["Super+H", "Super+Q"]
+#   action = "none"                     # unbind
+#
+# Chords are modifiers (Super, Ctrl, Alt, Shift) and a key joined by "+": a letter
+# or digit, a symbol ("Super+/"), or an xkb key name such as Return, Escape,
+# Page_Up, Left, F1, Print, XF86AudioRaiseVolume. Letters ignore case.
+#
+# Actions: spawn, overview, app-grid, shortcuts, close-window, maximize, restore,
+# tile-left, tile-right, fullscreen, switcher, switcher-reverse, workspace-1..4,
+# workspace-left, workspace-right, move-to-workspace-1..4, move-to-workspace-left,
+# move-to-workspace-right, screenshot, volume-up, volume-down, volume-mute, hud,
+# quit-session, none.
+#
+# Not configurable: tapping Super opens the overview, Super+drag moves a window
+# (Super+right-drag resizes it), Ctrl+Alt+F1..F12 switch to a text console.
+
+# -- Apps -------------------------------------------------------------------------
+
+[[bind]]
+keys    = ["Super+Return", "Super+T", "Ctrl+Alt+T"]
+action  = "spawn"
+command = "lumen-term"
+label   = "Terminal"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+B"
+action  = "spawn"
+command = "lumen-open --browser"
+label   = "Web browser"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+Y"
+action  = "spawn"
+command = "lumen-open https://www.youtube.com"
+label   = "YouTube"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+C"
+action  = "spawn"
+command = "lumen-claude"
+label   = "Claude Code"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+E"
+action  = "spawn"
+command = "lumen-files"
+label   = "Files"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+N"
+action  = "spawn"
+command = "lumen-edit"
+label   = "Text editor"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+I"
+action  = "spawn"
+command = "lumen-settings"
+label   = "Settings"
+group   = "Apps"
+
+[[bind]]
+keys    = ["Super+K", "XF86Calculator"]
+action  = "spawn"
+command = "lumen-calc"
+label   = "Calculator"
+group   = "Apps"
+
+[[bind]]
+keys    = "Ctrl+Shift+Escape"
+action  = "spawn"
+command = "lumen-monitor"
+label   = "System monitor"
+group   = "Apps"
+
+# -- Windows ----------------------------------------------------------------------
+
+[[bind]]
+keys   = ["Super+Q", "Alt+F4"]
+action = "close-window"
+label  = "Close window"
+group  = "Windows"
+
+[[bind]]
+keys   = "Super+Up"
+action = "maximize"
+label  = "Maximize"
+group  = "Windows"
+
+[[bind]]
+keys   = "Super+Down"
+action = "restore"
+label  = "Restore size"
+group  = "Windows"
+
+[[bind]]
+keys   = "Super+Left"
+action = "tile-left"
+label  = "Tile left"
+group  = "Windows"
+
+[[bind]]
+keys   = "Super+Right"
+action = "tile-right"
+label  = "Tile right"
+group  = "Windows"
+
+[[bind]]
+keys   = "Super+F"
+action = "fullscreen"
+label  = "Fullscreen"
+group  = "Windows"
+
+[[bind]]
+keys   = "Alt+Tab"
+action = "switcher"
+label  = "Switch windows"
+group  = "Windows"
+
+[[bind]]
+keys   = "Alt+Shift+Tab"
+action = "switcher-reverse"
+label  = "Switch windows backwards"
+group  = "Windows"
+
+# -- Workspaces -------------------------------------------------------------------
+
+[[bind]]
+keys   = "Super+1"
+action = "workspace-1"
+label  = "Go to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+2"
+action = "workspace-2"
+label  = "Go to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+3"
+action = "workspace-3"
+label  = "Go to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+4"
+action = "workspace-4"
+label  = "Go to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = ["Super+Page_Up", "Ctrl+Alt+Left"]
+action = "workspace-left"
+label  = "Previous workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = ["Super+Page_Down", "Ctrl+Alt+Right"]
+action = "workspace-right"
+label  = "Next workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+1"
+action = "move-to-workspace-1"
+label  = "Move window to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+2"
+action = "move-to-workspace-2"
+label  = "Move window to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+3"
+action = "move-to-workspace-3"
+label  = "Move window to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+4"
+action = "move-to-workspace-4"
+label  = "Move window to workspace"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+Page_Up"
+action = "move-to-workspace-left"
+label  = "Move window to previous"
+group  = "Workspaces"
+
+[[bind]]
+keys   = "Super+Shift+Page_Down"
+action = "move-to-workspace-right"
+label  = "Move window to next"
+group  = "Workspaces"
+
+# -- System -----------------------------------------------------------------------
+
+[[bind]]
+keys   = "Super+S"
+action = "overview"
+label  = "Activities overview"
+group  = "System"
+
+[[bind]]
+keys   = "Super+A"
+action = "app-grid"
+label  = "Show all apps"
+group  = "System"
+
+[[bind]]
+keys   = ["Super+/", "Super+?", "Super+F1"]
+action = "shortcuts"
+label  = "Keyboard shortcuts"
+group  = "System"
+
+[[bind]]
+keys   = "Print"
+action = "screenshot"
+label  = "Take a screenshot"
+group  = "System"
+
+[[bind]]
+keys   = "XF86AudioRaiseVolume"
+action = "volume-up"
+label  = "Volume up"
+group  = "System"
+
+[[bind]]
+keys   = "XF86AudioLowerVolume"
+action = "volume-down"
+label  = "Volume down"
+group  = "System"
+
+[[bind]]
+keys   = "XF86AudioMute"
+action = "volume-mute"
+label  = "Mute"
+group  = "System"
+
+[[bind]]
+keys   = "Super+H"
+action = "hud"
+label  = "Frame-time HUD"
+group  = "System"
+
+[[bind]]
+keys   = "Ctrl+Alt+BackSpace"
+action = "quit-session"
+label  = "Log out"
+group  = "System"

@@ -6,15 +6,18 @@
 //! the automated tests and the screenshot shortcut.
 //!
 //! Requests:
-//!   ping | version | socket | windows | outputs | cursor | stats | stats-reset
+//!   ping | version | socket | windows | outputs | cursor | stats | stats-reset | shell
 //!   screenshot <path>
 //!   pointer <x> <y>          absolute, logical coordinates
 //!   button <code> press|release
 //!   scroll <dy>
 //!   key <evdev-code> press|release
-//!   action <overview|apps|workspace N|switcher-next|switcher-commit|close|maximize|restore|hud|quit>
+//!   action <overview|apps|workspace N|switcher-next|switcher-prev|close|maximize|restore|hud|quit
+//!           |any keybinding action name: shortcuts, fullscreen, volume-up, workspace-2, ...>
 //!   spawn <program> [args...]
 //!   notify <title>|<body>
+//!   keybindings              the live shortcut table (JSON)
+//!   reload-keybindings       re-read the keybinding files
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -165,6 +168,11 @@ impl Lumen {
             ("socket", []) => self.socket_name.to_string_lossy().into_owned(),
             ("stats", []) => self.ipc_stats(),
             ("shell", []) => self.ipc_shell(),
+            ("keybindings", []) => self.ipc_keybindings(),
+            ("reload-keybindings", []) => match self.reload_keybindings() {
+                Ok(n) => format!("ok {n} shortcuts"),
+                Err(e) => format!("error {}", e.replace('\n', "; ")),
+            },
             ("stats-reset", []) => {
                 self.stats = Default::default();
                 "ok".into()
@@ -221,8 +229,7 @@ impl Lumen {
             ("notify", _) => {
                 let rest = line.splitn(2, ' ').nth(1).unwrap_or("");
                 let (title, body) = rest.split_once('|').unwrap_or((rest, ""));
-                let now = self.now();
-                self.shell.notify(&self.theme, title.trim(), body.trim(), now);
+                self.notify(title.trim(), body.trim());
                 "ok".into()
             }
             _ => format!("error unknown request: {line}"),
@@ -245,8 +252,37 @@ impl Lumen {
             ["tile-right"] => Action::Tile(crate::wm::Tile::Right),
             ["hud"] => Action::ToggleHud,
             ["quit"] => Action::Quit,
+            [name] => crate::keybind::parse_action(name, None).ok()??,
             _ => return None,
         })
+    }
+
+    /// One JSON object per binding: chord, action, command, label, group.
+    fn bindings_json(&self) -> String {
+        let items: Vec<String> = self
+            .keys
+            .bindings
+            .iter()
+            .map(|b| {
+                let command = match &b.action {
+                    Action::Spawn(cmd) => format!("[{}]", cmd.iter().map(|w| json_str(w)).collect::<Vec<_>>().join(",")),
+                    _ => "null".into(),
+                };
+                format!(
+                    "{{\"keys\":{},\"action\":{},\"command\":{},\"label\":{},\"group\":{}}}",
+                    json_str(&b.chord.spec()),
+                    json_str(&crate::keybind::action_name(&b.action)),
+                    command,
+                    json_str(&b.label),
+                    json_str(&b.group)
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    fn ipc_keybindings(&self) -> String {
+        self.bindings_json()
     }
 
     fn ipc_windows(&self) -> String {
@@ -312,8 +348,28 @@ impl Lumen {
                 )
             })
             .collect();
+        let sheet = sh.sheet.as_ref();
+        let sheet_rows: Vec<String> = sheet
+            .map(|s| {
+                s.visible
+                    .iter()
+                    .filter_map(|&i| s.rows.get(i))
+                    .map(|r| {
+                        let chords: Vec<String> = r.chords.iter().map(|c| json_str(&c.join("+"))).collect();
+                        format!("{{\"label\":{},\"group\":{},\"keys\":[{}]}}", json_str(&r.label), json_str(&r.group), chords.join(","))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let selected_row = sheet.and_then(|s| s.selected_row()).and_then(|i| sheet.and_then(|s| s.rows.get(i))).map(|r| json_str(&r.label));
+        let osd = sh
+            .osd
+            .as_ref()
+            .filter(|o| o.anim.target > 0.0)
+            .map(|o| format!("{{\"level\":{:.3},\"muted\":{},\"icon\":{}}}", o.level, o.muted, json_str(o.icon())))
+            .unwrap_or_else(|| "null".into());
         format!(
-            "{{\"overview\":{},\"apps_mode\":{},\"query\":{},\"results\":[{}],\"visible_apps\":[{}],\"selected\":{},\"popover\":{},\"switcher\":{},\"dock_shown\":{:.3},\"notifications\":[{}],\"dock\":[{}],\"hits\":[{}]}}",
+            "{{\"overview\":{},\"apps_mode\":{},\"query\":{},\"results\":[{}],\"visible_apps\":[{}],\"selected\":{},\"popover\":{},\"switcher\":{},\"dock_shown\":{:.3},\"notifications\":[{}],\"dock\":[{}],\"hits\":[{}],\"shortcuts\":{},\"shortcuts_shown\":{:.3},\"shortcuts_query\":{},\"shortcuts_rows\":[{}],\"shortcuts_selected\":{},\"shortcuts_scroll\":{:.1},\"shortcuts_max_scroll\":{:.1},\"osd\":{},\"bindings\":{}}}",
             sh.overview_open,
             sh.apps_mode,
             json_str(&sh.query),
@@ -326,6 +382,15 @@ impl Lumen {
             notes.join(","),
             dock.join(","),
             hits.join(","),
+            sheet.is_some_and(|s| s.open),
+            sheet.map(|s| s.anim.value).unwrap_or(0.0),
+            json_str(sheet.map(|s| s.query.as_str()).unwrap_or("")),
+            sheet_rows.join(","),
+            selected_row.unwrap_or_else(|| "null".into()),
+            sheet.map(|s| s.scroll.value).unwrap_or(0.0),
+            sheet.map(|s| s.max_scroll()).unwrap_or(0.0),
+            osd,
+            self.bindings_json(),
         )
     }
 
@@ -413,28 +478,52 @@ impl Lumen {
         Ok((w, h, px))
     }
 
-    /// Print key: save a screenshot to ~/Pictures (or $XDG_PICTURES_DIR).
+    /// Print key: save a screenshot as ~/Pictures/Screenshot-YYYY-MM-DD-HHMMSS.png
+    /// (or in $XDG_PICTURES_DIR). The frame is captured now; encoding and
+    /// writing happen off the main loop, and a notification reports the result.
     pub fn screenshot_to_file(&mut self) {
         let dir = std::env::var_os("XDG_PICTURES_DIR")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Pictures")))
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        let _ = std::fs::create_dir_all(&dir);
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let path = dir.join(format!("screenshot-{secs}.png"));
-        let now = self.now();
-        let result = self.capture().and_then(|(w, h, px)| crate::png::write_file(&path, w, h, &px).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => {
-                tracing::info!("screenshot saved to {}", path.display());
-                self.shell.notify(&self.theme, "Screenshot saved", &path.display().to_string(), now);
-            }
+        let stamp = local_timestamp();
+        match self.capture() {
+            Ok((w, h, px)) => self.bg.run(move || {
+                let saved = std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display())).and_then(|()| {
+                    let path = unique_path(&dir, &format!("Screenshot-{stamp}"), "png");
+                    crate::png::write_file(&path, w, h, &px).map(|()| path).map_err(|e| e.to_string())
+                });
+                crate::background::Done::Screenshot(saved)
+            }),
             Err(e) => {
                 tracing::warn!("screenshot failed: {e}");
-                self.shell.notify(&self.theme, "Screenshot failed", &e, now);
+                self.notify("Screenshot failed", &e);
             }
         }
     }
+}
+
+/// Local time as "YYYY-MM-DD-HHMMSS".
+fn local_timestamp() -> String {
+    // SAFETY: localtime_r writes into the provided struct.
+    let tm = unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        tm
+    };
+    format!("{:04}-{:02}-{:02}-{:02}{:02}{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+/// `dir/stem.ext`, or `dir/stem-2.ext`, ... if that exists already.
+fn unique_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem}-{n}.{ext}"));
+        n += 1;
+    }
+    path
 }
 
 fn write_reply(stream: &mut UnixStream, reply: &str) -> std::io::Result<()> {

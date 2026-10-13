@@ -10,9 +10,9 @@ use lumen_term::config::{Config, CursorStyle};
 use lumen_term::layout::Rect;
 use lumen_term::term::{attr, Cell, Color, CursorShape, Term, Underline};
 
-use crate::gfx::atlas::{Atlas, Entry};
-use crate::gfx::glyphs::{CellMetrics, Fonts, GlyphKey, BOLD, ITALIC, PHASES, TOFU};
-use crate::gfx::{self, boxdraw, color, GlyphInst, RectInst, Scene, KIND_CURL, KIND_DASHED, KIND_DOTTED, KIND_FILL, KIND_OUTLINE};
+use lumen_ui::gfx::atlas::{Atlas, Entry};
+use lumen_ui::gfx::glyphs::{CellMetrics, Fonts, GlyphKey, BOLD, ITALIC, PHASES, TOFU};
+use lumen_ui::gfx::{boxdraw, color, GlyphInst, RectInst, Scene, KIND_CURL, KIND_DASHED, KIND_DOTTED, KIND_FILL, KIND_OUTLINE};
 use crate::pane::Pane;
 
 pub type Rgb = (u8, u8, u8);
@@ -503,7 +503,6 @@ pub fn pane(view: PaneView, cfg: &Config, colors: &Colors, fonts: &mut Fonts, at
             }
         }
     }
-    let _ = (gfx::lin, KIND_FILL);
 }
 
 /// Text in the UI font with its baseline at `y`, left edge at `x`; returns

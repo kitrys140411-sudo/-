@@ -75,10 +75,13 @@ pub fn update_shm_formats(shm: &mut ShmState, r: &GlesRenderer) {
 impl Lumen {
     /// Step all animations to `target` (the predicted presentation time).
     pub fn advance_animations(&mut self, target: Duration) {
-        let dt = target.saturating_sub(self.shell.last_anim_time);
+        // After an idle period the last frame may be seconds old: animations
+        // started since then (by input, a new window) begin now, so stepping
+        // them by the whole gap would skip their first frames.
+        let from = if self.shell.anim_running { self.shell.last_anim_time } else { self.now().min(target) };
         self.shell.last_anim_time = target;
-        // Large gaps (idle) must not make springs jump: they were settled anyway.
-        let dt = dt.min(Duration::from_millis(100));
+        // A stalled frame must not make springs jump either.
+        let dt = target.saturating_sub(from).min(Duration::from_millis(100));
         let moving = self.wm.any_animating();
         self.wm.advance(dt);
         let out = self.output_rect();
@@ -87,6 +90,7 @@ impl Lumen {
             // Windows slide under a resting pointer.
             self.refresh_pointer_focus();
         }
+        self.shell.anim_running = self.animating();
     }
 
     pub fn animating(&self) -> bool {
