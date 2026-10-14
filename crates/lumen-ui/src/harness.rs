@@ -195,6 +195,11 @@ impl Harness {
         self.click_at(p, Button::Left);
     }
 
+    pub fn double_click_at(&mut self, p: Vec2) {
+        self.click_at(p, Button::Left);
+        self.click_at(p, Button::Left);
+    }
+
     pub fn click_at(&mut self, p: Vec2, button: Button) {
         self.move_to(p);
         self.press(p, button, true);

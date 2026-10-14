@@ -69,6 +69,30 @@ impl ScrollState {
         self.scroll_to(Vec2::new(self.target.x, t));
     }
 
+    /// Scroll so that `x0..x1` is visible (with a margin), animated.
+    pub(crate) fn reveal_x(&mut self, x0: f32, x1: f32, viewport_w: f32) {
+        let mut t = self.target.x;
+        if x1 > t + viewport_w {
+            t = x1 - viewport_w;
+        }
+        if x0 < t {
+            t = x0;
+        }
+        self.scroll_to(Vec2::new(t.max(0.0), self.target.y));
+    }
+
+    /// Move the content by `d` without animation, wherever it is going (the
+    /// content above the view changed size: keep what is shown in place).
+    pub(crate) fn shift(&mut self, d: Vec2) {
+        self.pos = self.pos + d;
+        self.target = self.target + d;
+        // Keep the springs' velocity: an animation in progress continues.
+        for (s, dv) in self.springs.iter_mut().zip([d.x, d.y]) {
+            s.value += dv;
+            s.target += dv;
+        }
+    }
+
     pub(crate) fn scroll_to(&mut self, to: Vec2) {
         if to != self.target {
             self.target = to;

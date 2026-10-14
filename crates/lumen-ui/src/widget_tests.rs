@@ -338,3 +338,178 @@ fn background_tasks_reach_the_view() {
     h.frame(&mut app);
     assert!(h.widget("Result 3628800").is_some());
 }
+
+// -- Multi-line editor -------------------------------------------------------------------
+
+use crate::{TextDoc, TextEditor};
+
+fn editor_app(doc: TextDoc, wrap: bool) -> F<(TextDoc, u32), impl FnMut(&mut (TextDoc, u32), &mut Ui)> {
+    F((doc, 0), move |s: &mut (TextDoc, u32), ui: &mut Ui| {
+        // App shortcuts on keys the editor also uses: only Ctrl+S gets through.
+        if ui.shortcut(Shortcut::ctrl('s')) {
+            s.1 += 1;
+        }
+        if ui.shortcut(Shortcut::key(Key::Enter)) || ui.shortcut(Shortcut::key(Key::Up)) {
+            s.1 += 100;
+        }
+        TextEditor::new("notes", &mut s.0).wrap(wrap).line_numbers(true).show(ui);
+    })
+}
+
+fn type_keys(h: &mut Harness, keys: &[(Key, Mods)]) {
+    for &(k, m) in keys {
+        h.key(k, m);
+    }
+}
+
+#[test]
+fn editor_types_lines_keeps_indentation_and_moves_vertically() {
+    let Some(mut h) = harness(640.0, 400.0) else { return };
+    let mut app = editor_app(TextDoc::new(""), true);
+    h.settle(&mut app);
+    h.click("notes");
+    h.frame(&mut app);
+    h.type_text("fn main() {");
+    h.key(Key::Enter, Mods::NONE);
+    h.type_text("    let x = 1;");
+    h.key(Key::Enter, Mods::NONE);
+    h.type_text("y");
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "fn main() {\n    let x = 1;\n    y");
+    assert_eq!(app.0 .1, 0, "Enter and Up stay with the focused editor");
+    assert!(h.log().iter().any(|l| l.starts_with("edit notes fn main()")));
+    // Up keeps the column (monospace: the same x is the same column).
+    h.key(Key::Up, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position(), (1, 5));
+    h.key(Key::Up, Mods::NONE);
+    h.key(Key::End, Mods::NONE);
+    h.key(Key::Down, Mods::SHIFT);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.selected_text(), "\n    let x =", "Shift+Down from the end of a longer line keeps x");
+    h.key(Key::Char('c'), Mods::CTRL);
+    h.key(Key::Char('s'), Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(h.copied().as_deref(), Some("\n    let x ="));
+    assert_eq!(app.0 .1, 1, "Ctrl+S reaches the app");
+    // Home goes to the first non-blank, then to the line start.
+    h.key(Key::Down, Mods::NONE);
+    h.key(Key::Home, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position(), (2, 4));
+    h.key(Key::Home, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position(), (2, 0));
+    // Undo removes the typing word by word, Ctrl+Shift+Z redoes.
+    h.key(Key::Char('z'), Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "fn main() {\n    let x = 1;\n    ");
+    h.key(Key::Char('z'), Mods::CTRL_SHIFT);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "fn main() {\n    let x = 1;\n    y");
+}
+
+#[test]
+fn editor_tabs_indent_and_paste() {
+    let Some(mut h) = harness(640.0, 400.0) else { return };
+    let mut app = editor_app(TextDoc::new("one\ntwo"), true);
+    h.settle(&mut app);
+    h.click("notes");
+    h.frame(&mut app);
+    type_keys(&mut h, &[(Key::Home, Mods::CTRL), (Key::Tab, Mods::NONE)]);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "\tone\ntwo");
+    h.key(Key::Char('a'), Mods::CTRL);
+    h.key(Key::Tab, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "\t\tone\n\ttwo", "Tab indents every selected line");
+    h.key(Key::Tab, Mods::SHIFT);
+    h.key(Key::Tab, Mods::SHIFT);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "one\ntwo");
+    h.key(Key::End, Mods::CTRL);
+    h.key(Key::Char('v'), Mods::CTRL);
+    h.frame(&mut app);
+    h.paste("\r\nthree\nfour");
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.text(), "one\ntwo\nthree\nfour", "pasted line ends are normalized");
+    assert_eq!(app.0 .0.cursor_position(), (3, 4));
+}
+
+#[test]
+fn editor_mouse_places_selects_words_and_drags() {
+    let Some(mut h) = harness(640.0, 400.0) else { return };
+    let mut app = editor_app(TextDoc::new("alpha beta gamma\nsecond line here\nthird"), true);
+    h.settle(&mut app);
+    let r = h.widget("notes").unwrap().rect;
+    let lh = (14.0f32 * 1.5).round();
+    // Far right of the second line: its end.
+    let row = |k: f32| r.y + 10.0 + lh * (k + 0.5);
+    h.click_at(Vec2::new(r.right() - 30.0, row(1.0)), Button::Left);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position(), (1, 16));
+    // Double click a word (120 px in: past the gutter, inside "alpha" or
+    // "beta" whatever the monospace font's width).
+    h.double_click_at(Vec2::new(r.x + 120.0, row(0.0)));
+    h.frame(&mut app);
+    let word = app.0 .0.selected_text().to_string();
+    assert!(["alpha", "beta"].contains(&word.as_str()), "a word is selected: {word:?}");
+    // Drag from the start of line 0 to the middle of line 2.
+    h.drag(Vec2::new(r.x + 46.0, row(0.0)), Vec2::new(r.right() - 10.0, row(2.0)));
+    h.frame(&mut app);
+    let sel = app.0 .0.selected_text().to_string();
+    assert!(sel.ends_with("third") && sel.contains("second line here\n"), "{sel:?}");
+    // Triple click selects the line.
+    h.click_at(Vec2::new(r.x + 120.0, row(1.0)), Button::Left);
+    h.click_at(Vec2::new(r.x + 120.0, row(1.0)), Button::Left);
+    h.click_at(Vec2::new(r.x + 120.0, row(1.0)), Button::Left);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.selected_text(), "second line here\n");
+}
+
+#[test]
+fn editor_wraps_long_lines_into_rows() {
+    let Some(mut h) = harness(360.0, 400.0) else { return };
+    let long = "word ".repeat(40);
+    let mut app = editor_app(TextDoc::new(&format!("{long}\nshort")), true);
+    h.settle(&mut app);
+    h.click("notes");
+    type_keys(&mut h, &[(Key::Home, Mods::CTRL), (Key::End, Mods::NONE)]);
+    h.frame(&mut app);
+    let (line, col) = app.0 .0.cursor_position();
+    assert!(line == 0 && col > 10 && col < 60, "End goes to the end of the screen row: {col}");
+    h.key(Key::Down, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position().0, 0, "Down moves to the next row of the same line");
+    h.key(Key::End, Mods::CTRL);
+    h.key(Key::Up, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position().0, 0, "Up from the next line lands on the long line's last row");
+    assert!(app.0 .0.cursor_position().1 > 150);
+}
+
+#[test]
+fn editor_shows_only_visible_lines_of_a_big_document() {
+    let Some(mut h) = harness(640.0, 400.0) else { return };
+    let text: String = (0..100_000).map(|i| format!("line {i} of a long file\n")).collect();
+    let mut app = editor_app(TextDoc::new(&text), true);
+    h.settle(&mut app);
+    h.click("notes");
+    h.frame(&mut app);
+    let t0 = std::time::Instant::now();
+    h.key(Key::End, Mods::CTRL);
+    h.settle(&mut app);
+    assert_eq!(app.0 .0.cursor_position(), (100_000, 0));
+    // The last lines are on screen: clicking near the bottom lands there.
+    let r = h.widget("notes").unwrap().rect;
+    h.click_at(Vec2::new(r.x + 200.0, r.bottom() - 40.0), Button::Left);
+    h.frame(&mut app);
+    let line = app.0 .0.cursor_position().0;
+    assert!(line > 99_980, "clicked line {line}");
+    h.key(Key::Home, Mods::CTRL);
+    h.settle(&mut app);
+    h.click_at(Vec2::new(r.x + 200.0, r.y + 20.0), Button::Left);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.cursor_position().0, 0);
+    eprintln!("100k lines: end, click, home, click in {:?}", t0.elapsed());
+}

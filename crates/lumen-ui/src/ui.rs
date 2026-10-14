@@ -164,10 +164,11 @@ pub struct Ui {
     prev_rects: HashMap<Id, Rect>,
     /// Content extents of boxes with ids (scroll areas).
     prev_content: HashMap<Id, Vec2>,
-    /// A focused text input was built in this pass (in this overlay), and
-    /// in the previous one: app shortcuts leave its editing keys alone.
-    text_owner: Option<Option<Id>>,
-    prev_text_owner: Option<Option<Id>>,
+    /// A focused text input was built in this pass (in this overlay; and
+    /// whether it is multi-line), and in the previous one: app shortcuts
+    /// leave its editing keys alone.
+    text_owner: Option<(Option<Id>, bool)>,
+    prev_text_owner: Option<(Option<Id>, bool)>,
     pub(crate) now: Instant,
     pub(crate) frame: u64,
     pub(crate) animating: bool,
@@ -750,15 +751,18 @@ impl Ui {
     /// in `view` the shortcut is checked; other shortcuts (Ctrl+S, F5,
     /// Escape) still work.
     pub fn shortcut(&mut self, s: Shortcut) -> bool {
-        if self.prev_text_owner == Some(self.overlay) && crate::widgets::text_input::is_editing_key(s.key, s.mods) {
-            return false;
+        if let Some((owner, multiline)) = self.prev_text_owner {
+            if owner == self.overlay && crate::widgets::text_input::is_editing_key(s.key, s.mods, multiline) {
+                return false;
+            }
         }
         self.take_key(s.key, s.mods)
     }
 
-    /// A focused text input is being built (it gets the editing keys).
-    pub(crate) fn mark_text_focus(&mut self) {
-        self.text_owner = Some(self.overlay);
+    /// A focused text input is being built (it gets the editing keys; a
+    /// multi-line one also Enter, Tab and vertical moves).
+    pub(crate) fn mark_text_focus(&mut self, multiline: bool) {
+        self.text_owner = Some((self.overlay, multiline));
     }
 
     /// Use all unused key presses with `f` (text input); `f` returns whether

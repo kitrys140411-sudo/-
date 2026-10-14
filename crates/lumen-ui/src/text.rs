@@ -103,9 +103,28 @@ impl TextLayout {
         self.lines.get(line).map(|l| l.x_at(b) / self.scale).unwrap_or(0.0)
     }
 
-    /// The byte offset in line `line` closest to logical `x`.
+    /// The byte offset (a grapheme boundary) in line `line` closest to
+    /// logical `x`. One pass over the line, so long lines stay cheap.
     pub fn index_at(&self, line: usize, x: f32) -> usize {
-        self.lines.get(line).map(|l| l.index_at(x * self.scale)).unwrap_or(0)
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(l) = self.lines.get(line) else { return 0 };
+        let x = x * self.scale;
+        let (mut best, mut best_d) = (0, f32::MAX);
+        let (mut gi, mut pen) = (0, 0.0);
+        for b in l.text.grapheme_indices(true).map(|(i, _)| i).chain(std::iter::once(l.text.len())) {
+            // The pen at `b`: advances of the glyphs of earlier clusters
+            // (as `Line::x_at` computes it).
+            while gi < l.glyphs.len() && l.glyphs[gi].cluster < b {
+                pen += l.glyphs[gi].advance;
+                gi += 1;
+            }
+            let at = if gi >= l.glyphs.len() { l.width } else { pen };
+            let d = (at - x).abs();
+            if d < best_d {
+                (best, best_d) = (b, d);
+            }
+        }
+        best
     }
 
     pub fn line_width(&self, line: usize) -> f32 {

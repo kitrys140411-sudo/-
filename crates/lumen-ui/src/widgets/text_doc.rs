@@ -49,6 +49,11 @@ pub struct TextDoc {
     crlf: bool,
     /// The editor should scroll the cursor into view (set by moves).
     pub(crate) reveal: bool,
+    /// The editor's measured screen rows of each line (0: not measured), for
+    /// the wrap width and style in `rows_key`. Kept aligned with the lines
+    /// by every edit, so lines measured once stay measured.
+    pub(crate) rows: Vec<u32>,
+    pub(crate) rows_key: u64,
 }
 
 impl Default for TextDoc {
@@ -76,6 +81,8 @@ impl TextDoc {
             saved: 0,
             crlf,
             reveal: false,
+            rows: Vec::new(),
+            rows_key: 0,
         };
         d.reindex();
         d
@@ -276,6 +283,13 @@ impl TextDoc {
         self.lines.splice(first..last, new.iter().copied());
         for s in &mut self.lines[first + new.len()..] {
             *s = (*s as isize + delta) as usize;
+        }
+        if self.rows.len() + new.len() == self.lines.len() + (last - first) {
+            // The edited line and the new ones need measuring again.
+            self.rows.splice(first..last, new.iter().map(|_| 0));
+            self.rows[first - 1] = 0;
+        } else {
+            self.rows.clear();
         }
         self.version += 1;
     }
@@ -576,6 +590,19 @@ mod tests {
         assert_eq!(fresh.text(), "a\nb\n");
         assert_eq!(fresh.line_count(), 3);
         assert_eq!(fresh.to_file_text(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn measured_rows_follow_edits() {
+        let mut d = doc("a\nb\nc\nd");
+        d.rows = vec![1, 2, 3, 4];
+        d.set_selection(2, 3);
+        d.insert("x\ny\nz");
+        assert_eq!(d.line_count(), 6);
+        assert_eq!(d.rows, vec![1, 0, 0, 0, 3, 4], "the edited line and the new ones are unknown");
+        d.set_selection(0, d.offset(4, 0));
+        d.delete_selection();
+        assert_eq!(d.rows, vec![0, 4]);
     }
 
     #[test]

@@ -66,7 +66,10 @@ pub(crate) struct Input {
     /// Focus moved by keyboard: draw the focus ring.
     pub focus_visible: bool,
     pub window_focused: bool,
-    last_click: Option<(Id, Button, Instant, Vec2, u32)>,
+    /// The last press (for counting double and triple clicks) and the
+    /// count of the press in progress.
+    last_press: Option<(Id, Button, Instant, Vec2, u32)>,
+    press_count: u32,
 }
 
 impl Default for Input {
@@ -90,7 +93,8 @@ impl Default for Input {
             focus: None,
             focus_visible: false,
             window_focused: true,
-            last_click: None,
+            last_press: None,
+            press_count: 1,
         }
     }
 }
@@ -143,6 +147,8 @@ impl Input {
                     if !self.dragging && (p - self.press_pos).length() > DRAG_THRESHOLD {
                         self.dragging = true;
                         self.drag_started = self.active.map(|a| a.0);
+                        // A drag is not the first half of a double click.
+                        self.last_press = None;
                         // The drag starts where the press was.
                         self.drag_delta = self.drag_delta + (p - self.press_pos);
                     } else if self.dragging {
@@ -171,10 +177,18 @@ impl Input {
                     self.focus_visible = false;
                 }
                 if let Some(h) = hit {
+                    // Counted at the press, so a text field selects the word
+                    // as the second press goes down, like everywhere else.
+                    let count = match self.last_press {
+                        Some((lid, lb, t, lp, n)) if lid == h.id && lb == button && now.duration_since(t) < MULTI_CLICK && (lp - pos).length() < 6.0 => n % 3 + 1,
+                        _ => 1,
+                    };
+                    self.last_press = Some((h.id, button, now, pos, count));
+                    self.press_count = count;
                     self.active = Some((h.id, button));
                     self.press_pos = pos;
                     self.dragging = false;
-                    self.presses.push(Click { id: h.id, button, count: 1, pos, mods: self.mods });
+                    self.presses.push(Click { id: h.id, button, count, pos, mods: self.mods });
                 } else {
                     self.active = None;
                 }
@@ -187,12 +201,7 @@ impl Input {
                         if self.dragging {
                             self.drag_released = Some(id);
                         } else if self.hovered == Some(id) {
-                            let count = match self.last_click {
-                                Some((lid, lb, t, lp, n)) if lid == id && lb == button && now.duration_since(t) < MULTI_CLICK && (lp - pos).length() < 6.0 => n % 3 + 1,
-                                _ => 1,
-                            };
-                            self.last_click = Some((id, button, now, pos, count));
-                            self.clicks.push(Click { id, button, count, pos, mods: self.mods });
+                            self.clicks.push(Click { id, button, count: self.press_count, pos, mods: self.mods });
                         }
                         self.active = None;
                         self.dragging = false;
@@ -284,6 +293,7 @@ mod tests {
         for n in 1..=4 {
             i.begin_pass();
             press(&mut i, 15.0, 15.0, true, t);
+            assert_eq!(i.presses[0].count as u64, (n - 1) % 3 + 1, "counted as the button goes down");
             press(&mut i, 15.0, 15.0, false, t + Duration::from_millis(n * 100));
             assert_eq!(i.clicks[0].count as u64, (n - 1) % 3 + 1);
         }

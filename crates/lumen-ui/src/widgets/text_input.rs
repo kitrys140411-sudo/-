@@ -134,7 +134,8 @@ impl<'a> TextInput<'a> {
             }
             st.blink = Some(now);
         }
-        if r.dragging {
+        // (The release may come in the same pass as the last moves.)
+        if r.dragging || r.drag_released {
             if let Some(p) = ui.pointer() {
                 let i = index_at(ui, text, p.x, st.scroll);
                 st.edit.move_to(i, true);
@@ -156,7 +157,7 @@ impl<'a> TextInput<'a> {
         // Keyboard.
         let mut submitted = false;
         if focused && ui.keys_allowed() {
-            ui.mark_text_focus();
+            ui.mark_text_focus(false);
         }
         if focused {
             ui.consume_keys(|ui, k| {
@@ -409,11 +410,13 @@ pub fn select_range(ui: &mut Ui, id: Id, anchor: usize, cursor: usize) {
     st.was_focused = true;
 }
 
-/// Keys a focused input uses for editing (see [`Ui::shortcut`]).
-pub(crate) fn is_editing_key(key: Key, m: Mods) -> bool {
+/// Keys a focused input uses for editing (see [`Ui::shortcut`]); a
+/// multi-line editor also uses Enter, Tab and the vertical moves.
+pub(crate) fn is_editing_key(key: Key, m: Mods, multiline: bool) -> bool {
     let plain = !m.command();
     match key {
         Key::Left | Key::Right | Key::Home | Key::End | Key::Backspace | Key::Delete => !m.alt && !m.logo,
+        Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Enter | Key::Tab if multiline => !m.command(),
         Key::Char(c) if plain => !c.is_control(),
         Key::Char('a' | 'c' | 'x' | 'v' | 'z' | 'y') => m == Mods::CTRL || (m == Mods::CTRL_SHIFT && key == Key::Char('z')),
         Key::Insert => m == Mods::SHIFT,
