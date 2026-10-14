@@ -144,7 +144,7 @@ fn render(state: &mut Lumen) {
     let animating = state.animating();
     state.stats.push_present(now, refresh, animating);
     let feedback = state.presentation_feedback(&output);
-    crate::backend::present(feedback, state.clock.now(), refresh, 0, false);
+    crate::backend::present(feedback, state.clock.now(), refresh, 0, false, false);
     state.post_repaint(&output, now);
     state.notify_ready();
     if animating {

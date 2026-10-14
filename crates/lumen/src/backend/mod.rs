@@ -237,8 +237,13 @@ pub fn present(
     refresh: Duration,
     seq: u64,
     hw: bool,
+    zero_copy: bool,
 ) {
     use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
-    let flags = if hw { Kind::Vsync | Kind::HwClock | Kind::HwCompletion } else { Kind::Vsync };
+    let mut flags = if hw { Kind::Vsync | Kind::HwClock | Kind::HwCompletion } else { Kind::Vsync };
+    // The client's buffer itself was on screen (direct scanout).
+    if zero_copy {
+        flags |= Kind::ZeroCopy;
+    }
     feedback.presented(time, Refresh::fixed(refresh), seq, flags);
 }

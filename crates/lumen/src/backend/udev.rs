@@ -96,6 +96,8 @@ struct Surface {
     refresh: Duration,
     last_render: Duration,
     frame_seq: u64,
+    /// The queued frame shows a client buffer directly (no composition).
+    queued_direct: bool,
     /// Time of the last vblank (presentation clock), for predicting the next ones.
     last_vblank: Option<Duration>,
 }
@@ -137,9 +139,13 @@ pub enum VrrMode {
 
 impl VrrMode {
     pub fn from_env() -> VrrMode {
-        match std::env::var("LUMEN_VRR").as_deref() {
-            Ok("off" | "0" | "no") => VrrMode::Off,
-            Ok("always" | "on" | "1") => VrrMode::Always,
+        VrrMode::parse(std::env::var("LUMEN_VRR").ok().as_deref())
+    }
+
+    fn parse(v: Option<&str>) -> VrrMode {
+        match v.map(str::trim) {
+            Some("off" | "0" | "no" | "false") => VrrMode::Off,
+            Some("always" | "on" | "1" | "yes" | "true") => VrrMode::Always,
             _ => VrrMode::Fullscreen,
         }
     }
@@ -545,6 +551,7 @@ fn scan_connectors(state: &mut Lumen) {
                         refresh,
                         last_render: Duration::from_millis(4),
                         frame_seq: 0,
+                        queued_direct: false,
                         last_vblank: None,
                     },
                 );
@@ -655,15 +662,16 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
         if let Some(states) = states {
             send_dmabuf_feedback(state, crtc, &output, &states);
         }
-        damaged
+        (damaged, direct)
     });
     match result {
-        Ok(true) => {
+        Ok((true, direct)) => {
             state.stats.push_render(took.as_secs_f32() * 1000.0);
             let feedback = state.presentation_feedback(&output);
             let Backend::Udev(d) = &mut state.backend else { return };
             let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
             s.last_render = took;
+            s.queued_direct = direct;
             match s.out.queue_frame(Some(feedback)) {
                 Ok(()) => s.redraw = Redraw::WaitingForVBlank { redraw_needed: false },
                 Err(e) => {
@@ -673,7 +681,7 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
             }
             state.post_repaint(&output, now);
         }
-        Ok(false) => {
+        Ok((false, _)) => {
             // No damage: wait for an estimated vblank so frame callbacks keep their pace.
             let Backend::Udev(d) = &mut state.backend else { return };
             let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
@@ -752,7 +760,7 @@ fn on_vblank(state: &mut Lumen, crtc: crtc::Handle, metadata: &mut Option<DrmEve
     s.last_vblank = Some(time);
     let refresh = s.refresh;
     match s.out.frame_submitted() {
-        Ok(Some(Some(feedback))) => super::present(feedback, time.into(), refresh, s.frame_seq, true),
+        Ok(Some(Some(feedback))) => super::present(feedback, time.into(), refresh, s.frame_seq, true, s.queued_direct),
         Ok(_) => {}
         Err(e) => tracing::warn!("frame_submitted: {e:?}"),
     }
@@ -773,4 +781,19 @@ fn on_vblank(state: &mut Lumen, crtc: crtc::Handle, metadata: &mut Option<DrmEve
         });
     }
     state.notify_ready();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VrrMode;
+
+    #[test]
+    fn vrr_mode_follows_fullscreen_by_default() {
+        assert_eq!(VrrMode::parse(None), VrrMode::Fullscreen);
+        assert_eq!(VrrMode::parse(Some("bogus")), VrrMode::Fullscreen);
+        assert_eq!(VrrMode::parse(Some("off")), VrrMode::Off);
+        assert_eq!(VrrMode::parse(Some(" always ")), VrrMode::Always);
+        assert!(VrrMode::Fullscreen.wanted(true) && !VrrMode::Fullscreen.wanted(false));
+        assert!(!VrrMode::Off.wanted(true) && VrrMode::Always.wanted(false));
+    }
 }

@@ -53,10 +53,16 @@ pub struct Idle {
 
 impl Idle {
     pub fn new() -> Idle {
-        let minutes = std::env::var("LUMEN_IDLE_BLANK").ok().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(10.0);
-        let timeout = (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0));
+        let timeout = blank_timeout(std::env::var("LUMEN_IDLE_BLANK").ok().as_deref());
         Idle { last_input: Duration::ZERO, timeout, blanked: false, inhibitors: Vec::new(), timer: None }
     }
+}
+
+/// `LUMEN_IDLE_BLANK` (minutes, fractions allowed; 0 = never) as a timeout;
+/// unset or unparsable: 10 minutes.
+fn blank_timeout(minutes: Option<&str>) -> Option<Duration> {
+    let minutes = minutes.and_then(|v| v.trim().parse::<f64>().ok()).filter(|m| m.is_finite()).unwrap_or(10.0);
+    (minutes > 0.0).then(|| Duration::from_secs_f64(minutes * 60.0))
 }
 
 /// The toplevel surface of a (sub)surface.
@@ -296,3 +302,19 @@ smithay::delegate_pointer_constraints!(Lumen);
 smithay::delegate_relative_pointer!(Lumen);
 smithay::delegate_keyboard_shortcuts_inhibit!(Lumen);
 smithay::delegate_idle_inhibit!(Lumen);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_timeout_from_env() {
+        assert_eq!(blank_timeout(None), Some(Duration::from_secs(600)));
+        assert_eq!(blank_timeout(Some("5")), Some(Duration::from_secs(300)));
+        assert_eq!(blank_timeout(Some(" 0.5 ")), Some(Duration::from_secs(30)));
+        assert_eq!(blank_timeout(Some("0")), None);
+        assert_eq!(blank_timeout(Some("-1")), None);
+        assert_eq!(blank_timeout(Some("soon")), Some(Duration::from_secs(600)));
+        assert_eq!(blank_timeout(Some("inf")), Some(Duration::from_secs(600)));
+    }
+}
