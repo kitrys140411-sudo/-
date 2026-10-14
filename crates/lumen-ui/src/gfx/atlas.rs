@@ -114,6 +114,9 @@ pub struct Atlas<K: Hash + Eq + Clone> {
     size: u32,
     /// Set when a texture was reset: everything drawn must be re-resolved.
     pub generation: u64,
+    /// Bitmaps uploaded so far (a steady frame of known glyphs uploads
+    /// nothing; tests and perf logs watch this).
+    pub uploads: u64,
 }
 
 impl<K: Hash + Eq + Clone> Atlas<K> {
@@ -122,7 +125,7 @@ impl<K: Hash + Eq + Clone> Atlas<K> {
         // SAFETY: query on the current context.
         unsafe { glGetIntegerv(GL_MAX_TEXTURE_SIZE, &mut max) };
         let size = (max as u32).clamp(512, 2048);
-        Atlas { mask: Texture::new(size, false), color: None, entries: HashMap::new(), size, generation: 0 }
+        Atlas { mask: Texture::new(size, false), color: None, entries: HashMap::new(), size, generation: 0, uploads: 0 }
     }
 
     /// The entry for `key`, rasterizing with `make` on a miss. None for
@@ -160,6 +163,7 @@ impl<K: Hash + Eq + Clone> Atlas<K> {
         };
         let tex = if b.color { self.color.as_ref().unwrap() } else { &self.mask };
         tex.upload(pos.0, pos.1, b.width, b.height, data);
+        self.uploads += 1;
         let s = tex.size as f32;
         Some(Entry {
             uv: [pos.0 as f32 / s, pos.1 as f32 / s, (pos.0 + b.width) as f32 / s, (pos.1 + b.height) as f32 / s],

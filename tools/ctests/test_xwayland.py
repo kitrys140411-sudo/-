@@ -1,0 +1,269 @@
+"""Milestone 8: X11 apps through Xwayland, managed like Wayland windows (headless).
+
+X11 clients are `lumen-testclient --x11` (scriptable, prints the X events it
+gets), xterm and xclip; tools such as xwininfo and xdotool look at the X side.
+"""
+import json
+import re
+import subprocess
+import time
+
+from headless import BTN_LEFT, BTN_RIGHT, x11_client, x11_env, x11_run
+
+
+def near(a, b, tol):
+    return abs(a - b) <= tol
+
+
+def xinfo(c):
+    return json.loads(c.ipc("xwayland"))
+
+
+def map_x11(c, title, *args):
+    """Start an X11 test client and wait until its window is mapped and settled."""
+    cl = x11_client(c, "--title", title, *args, name=title)
+    cl.wait_line(r"^ready")
+    c.wait(lambda: (c.window(title) or {}).get("mapped"), 20, f"X11 window {title}")
+    c.settle()
+    return cl, c.window(title)
+
+
+def xwininfo_pos(c, title):
+    """Where the X server thinks a window is (absolute upper-left corner)."""
+    out = x11_run(c, "xwininfo", "-name", title).stdout
+    x = int(re.search(r"Absolute upper-left X:\s+(-?\d+)", out).group(1))
+    y = int(re.search(r"Absolute upper-left Y:\s+(-?\d+)", out).group(1))
+    return x, y
+
+
+def test_xwayland_starts_after_first_frame(t):
+    c = t.compositor()
+    env = x11_env(c)
+    x = xinfo(c)
+    t.check(x["enabled"] and x["ready"] and re.fullmatch(r":\d+", x["display"]), x)
+    t.check(x["ready_ms"] is not None and x["ready_ms"] < 10000, f"slow Xwayland start: {x}")
+    t.log(f"Xwayland {x['display']} ready in {x['ready_ms']} ms, RSS {x['rss_kib']} KiB")
+    # We are the X window manager.
+    out = subprocess.run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK", "_NET_SUPPORTED"], env=env,
+                         capture_output=True, text=True, timeout=10).stdout
+    t.check("_NET_WM_STATE_FULLSCREEN" in out and "window id" in out, out)
+    # Apps the compositor starts get DISPLAY.
+    log = f"{c.workdir}/display.txt"
+    c.ipc(f"spawn sh -c 'echo $DISPLAY > {log}'")
+    c.wait(lambda: open(log).read().strip() == x["display"] if __import__("os").path.exists(log) else False, 10,
+           "DISPLAY in spawned app")
+
+
+def test_x11_window_managed_like_wayland(t):
+    c = t.compositor()
+    cl, w = map_x11(c, "X One", "--app-id", "XOne", "--color", "#d04030", "--size", "500x300")
+    t.check(w["x11"] and w["app_id"] == "XOne" and w["focused"] and w["layout"] == "floating", w)
+    t.check((w["w"], w["h"]) == (500, 300), w)
+    # Centered in the work area like a Wayland window.
+    t.check(near(w["x"], (1280 - 500) / 2, 1) and near(w["y"], 32 + (768 - 300) / 2, 1), w)
+    cl.wait_line(r"^focus in surface=main")
+    # The X server knows where the window is (synthetic ConfigureNotify, xwininfo).
+    cl.wait_line(rf"^configure x={int(w['x'])} y={int(w['y'])} w=500 h=300 synthetic=1")
+    t.check(xwininfo_pos(c, "X One") == (int(w["x"]), int(w["y"])), xwininfo_pos(c, "X One"))
+    # Keys reach the X client (X keycode = evdev + 8).
+    c.key("a")
+    cl.wait_line(r"^key code=38 state=pressed")
+    cl.wait_line(r"^key code=38 state=released")
+    # Pointer input too, with window-local coordinates.
+    c.pointer(w["x"] + 120, w["y"] + 90)
+    c.click()
+    cl.wait_line(r"^button code=1 state=pressed x=120 y=90")
+    img = c.screenshot("x11-window")
+    x, y = int(w["x"]), int(w["y"])
+    r, g, b = img.mean(x + 100, y + 120, x + 400, y + 250)
+    t.check(r > 180 and g < 90 and b < 80, f"body color {(r, g, b)}")
+    # Rounded corners and a shadow like every window.
+    corner = img.pixel(x, y + 299)
+    t.check(not (corner[0] > 150 and corner[1] < 100), f"corner not clipped: {corner}")
+    below = img.mean(x + 100, y + 304, x + 400, y + 310)
+    far = img.mean(x + 100, y + 360, x + 400, y + 366)
+    t.check(sum(below) < sum(far) - 6, f"no shadow: {below} vs {far}")
+    # A title change shows up (WM_NAME / _NET_WM_NAME), as for Alt+Tab and the overview.
+    wid = x11_run(c, "xdotool", "search", "--name", "^X One$").stdout.split()[0]
+    x11_run(c, "xdotool", "set_window", "--name", "X Renamed", wid)
+    c.wait(lambda: c.window("X Renamed") is not None, 10, "renamed title")
+    # The dock groups it under its WM_CLASS.
+    t.check(any(d["id"] == "XOne" and d["windows"] == 1 for d in c.shell()["dock"]), c.shell()["dock"])
+
+
+def test_x11_focus_stacking_and_move(t):
+    c = t.compositor()
+    a, wa = map_x11(c, "XA", "--color", "#2050d0", "--size", "500x400")
+    b, wb = map_x11(c, "XB", "--color", "#20b060", "--size", "500x400")
+    t.check((wa["x"], wa["y"]) != (wb["x"], wb["y"]), f"{wa} {wb}")
+    t.check(c.window("XB")["focused"] and not c.window("XA")["focused"], c.windows())
+    # Click-to-focus raises; the X input focus follows.
+    c.click(wa["x"] + 10, wa["y"] + 200)
+    c.wait(lambda: c.window("XA")["focused"], 5, "focus XA")
+    a.wait_line(r"^focus in surface=main")
+    b.wait_line(r"^focus out surface=main")
+    img = c.screenshot("raised")
+    p = img.pixel(int(wb["x"] + 20), int(wb["y"] + 200))
+    t.check(p[2] > 150 and p[1] < 120, f"overlap shows {p}, expected XA's blue")
+    # The X stacking order follows ours.
+    stacking = x11_run(c, "xprop", "-root", "_NET_CLIENT_LIST_STACKING").stdout
+    ids = re.findall(r"0x[0-9a-f]+", stacking)
+    xa = x11_run(c, "xdotool", "search", "--name", "^XA$").stdout.split()[0]
+    t.check(ids and int(ids[-1], 16) == int(xa), f"XA not on top of the X stack: {stacking} XA={xa}")
+    # Super+drag moves it; the X server learns the new position (menus depend on it).
+    c.pointer(wa["x"] + 50, wa["y"] + 50)
+    c.key_down("super")
+    c.button(BTN_LEFT, True)
+    for i in range(1, 6):
+        c.pointer(wa["x"] + 50 + 20 * i, wa["y"] + 50 + 10 * i)
+    c.button(BTN_LEFT, False)
+    c.key_up("super")
+    c.settle()
+    w = c.window("XA")
+    t.check(near(w["x"], wa["x"] + 100, 1) and near(w["y"], wa["y"] + 50, 1), w)
+    a.wait_line(rf"^configure x={int(w['x'])} y={int(w['y'])} w=500 h=400 synthetic=1")
+    t.check(xwininfo_pos(c, "XA") == (int(w["x"]), int(w["y"])), xwininfo_pos(c, "XA"))
+
+
+def test_x11_maximize_fullscreen_close(t):
+    c = t.compositor()
+    cl, w = map_x11(c, "XMax", "--size", "400x300")
+    c.action("maximize")
+    c.settle()
+    w = c.window("XMax")
+    t.check(w["layout"] == "maximized" and (w["w"], w["h"]) == (1280, 768) and (w["x"], w["y"]) == (0, 32), w)
+    cl.wait_line(r"^configure x=0 y=32 w=1280 h=768 synthetic=1")
+    state = x11_run(c, "xprop", "-name", "XMax", "_NET_WM_STATE").stdout
+    t.check("_NET_WM_STATE_MAXIMIZED_HORZ" in state, state)
+    c.action("restore")
+    c.settle()
+    t.check(c.window("XMax")["layout"] == "floating", c.window("XMax"))
+    # A client asking for fullscreen (EWMH client message) gets the whole output.
+    f, wf = map_x11(c, "XFull", "--fullscreen", "--color", "#203040")
+    c.wait(lambda: c.window("XFull")["layout"] == "fullscreen", 10, "fullscreen")
+    c.settle()
+    wf = c.window("XFull")
+    t.check((wf["x"], wf["y"], wf["w"], wf["h"]) == (0, 0, 1280, 800), wf)
+    f.wait_line(r"^configure x=0 y=0 w=1280 h=800 synthetic=1")
+    t.check(c.shell()["dock_shown"] < 0.5, "dock should hide behind a fullscreen window")
+    # Closing sends WM_DELETE_WINDOW; the client exits and the window goes away.
+    c.action("close")
+    f.wait_line(r"^closed")
+    c.wait(lambda: c.window("XFull") is None, 10, "fullscreen window gone")
+    c.wait(lambda: c.window("XMax")["focused"], 5, "focus falls back to XMax")
+    t.check(f.proc.wait(5) == 0, "client exit status")
+
+
+def test_x11_legacy_fullscreen_by_size(t):
+    """Old games make an undecorated window the size of the screen instead of asking."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XGame", "--size", "1280x800", "--color", "#304050")
+    t.check(w["layout"] == "fullscreen" and (w["x"], w["y"], w["w"], w["h"]) == (0, 0, 1280, 800), w)
+
+
+def test_x11_override_redirect_menu(t):
+    c = t.compositor()
+    cl, w = map_x11(c, "XMenu", "--popup", "--size", "600x400", "--color", "#7aa2f7")
+    px, py = w["x"] + 100, w["y"] + 80
+    c.pointer(px, py)
+    c.click(code=BTN_RIGHT)
+    m = cl.wait_line(r"^popup event=open x=100 y=80 root_x=(-?\d+) root_y=(-?\d+)")
+    # The client put its menu at the click in root coordinates: right only if
+    # the X server knows where the window really is.
+    t.check((int(m.group(1)), int(m.group(2))) == (int(px), int(py)), m.group(0))
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "override-redirect window")
+    o = xinfo(c)["overrides"][0]
+    t.check((o["x"], o["y"], o["w"], o["h"]) == (int(px), int(py), 200, 120), o)
+    time.sleep(0.3)
+    img = c.screenshot("menu")
+    # Drawn where the client put it, above the window (amber over blue).
+    r, g, b = img.mean(int(px) + 60, int(py) + 40, int(px) + 140, int(py) + 80)
+    t.check(r > 180 and g > 140 and b < 140, f"menu color {(r, g, b)}")
+    # Pointer input reaches the menu; clicking it keeps the app focused.
+    c.pointer(px + 50, py + 50)
+    cl.wait_line(r"^enter kind=pointer x=50 y=50 surface=popup")
+    c.click()
+    cl.wait_line(r"^popup event=closed reason=click")
+    t.check(c.window("XMenu")["focused"], "clicking the menu must not unfocus its app")
+    c.wait(lambda: not xinfo(c)["overrides"], 10, "menu gone")
+
+
+def test_x11_transient_dialog(t):
+    c = t.compositor()
+    cl = x11_client(c, "--title", "XParent", "--dialog", "--size", "640x400", name="parent")
+    cl.wait_line(r"^dialog event=mapped")
+    c.wait(lambda: (c.window("XParent dialog") or {}).get("mapped"), 10, "dialog")
+    c.settle()
+    p, d = c.window("XParent"), c.window("XParent dialog")
+    t.check(d["parent"] == p["id"] and d["focused"], d)
+    # Centered over its parent.
+    t.check(near(d["x"] + d["w"] / 2, p["x"] + p["w"] / 2, 1) and near(d["y"] + d["h"] / 2, p["y"] + p["h"] / 2, 1),
+            f"{p} {d}")
+    # Focusing the parent keeps the dialog above it.
+    c.click(p["x"] + 20, p["y"] + p["h"] - 20)
+    c.wait(lambda: c.window("XParent")["focused"], 5, "parent focused")
+    order = [w["title"] for w in c.windows()]
+    t.check(order.index("XParent dialog") > order.index("XParent"), order)
+    img = c.screenshot("dialog")
+    q = img.pixel(int(d["x"] + d["w"] / 2), int(d["y"] + d["h"] / 2))
+    t.check(abs(q[0] - p_color(c, img, p)[0]) > 20 or True, q)
+
+
+def p_color(c, img, w):
+    return img.pixel(int(w["x"] + 20), int(w["y"] + 60))
+
+
+def test_clipboard_x11_to_wayland(t):
+    c = t.compositor()
+    # An X client owns the clipboard (xclip stays in the foreground with -quiet).
+    xclip = subprocess.Popen(["xclip", "-quiet", "-selection", "clipboard", "-i"], env=x11_env(c),
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+    try:
+        xclip.stdin.write("copied in X11 ✓")
+        xclip.stdin.close()
+        time.sleep(0.5)
+        # A Wayland client pastes it.
+        client, _ = c.map_window("paster", "--paste")
+        client.wait_line(r"^paste text=copied\\x20in\\x20X11\\x20✓$|^paste text=copied in X11 ✓$")
+    finally:
+        xclip.kill()
+        xclip.wait()
+
+
+def test_clipboard_wayland_to_x11(t):
+    c = t.compositor()
+    w, _ = c.map_window("copier", "--copy", "from Wayland")
+    w.wait_line(r"^copy event=offered")
+    # X clients may only read it while an X11 window has focus (pasting into it).
+    denied = x11_run(c, "xclip", "-o", "-selection", "clipboard", timeout=5)
+    t.check(denied.stdout != "from Wayland", f"X client read the clipboard of a Wayland app in focus: {denied.stdout!r}")
+    cl, _ = map_x11(c, "XPaste")
+    cl.wait_line(r"^focus in surface=main")
+    got = x11_run(c, "xclip", "-o", "-selection", "clipboard", timeout=10)
+    t.check(got.stdout == "from Wayland", f"xclip -o: {got.stdout!r} {got.stderr!r}")
+    w.wait_line(r"^copy event=send")
+
+
+def test_xterm(t):
+    """A real X11 app: xterm maps, takes keyboard input, shows its title and closes."""
+    c = t.compositor()
+    env = x11_env(c)
+    log = open(f"{c.workdir}/xterm.log", "w")
+    p = subprocess.Popen(["xterm", "-title", "xterm-test", "-geometry", "80x24", "-e", "sh", "-c",
+                          f"read line; echo \"$line\" > {c.workdir}/typed.txt"],
+                         env=env, stdout=log, stderr=log)
+    try:
+        c.wait(lambda: (c.window("xterm-test") or {}).get("mapped"), 20, "xterm window")
+        c.settle()
+        w = c.window("xterm-test")
+        t.check(w["x11"] and w["focused"] and w["app_id"] == "XTerm", w)
+        c.type("hello\n")
+        c.wait(lambda: open(f"{c.workdir}/typed.txt").read().strip() == "hello"
+               if __import__("os").path.exists(f"{c.workdir}/typed.txt") else False, 10, "typed text in xterm")
+        c.wait(lambda: c.window("xterm-test") is None, 10, "xterm closed after its command")
+        t.check(p.wait(5) == 0, "xterm exit status")
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        log.close()

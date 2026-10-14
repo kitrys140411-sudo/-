@@ -3,12 +3,14 @@
 //! - `LUMEN_UI_TEST=1`: events are printed to stdout, one per line
 //!   (`ready`, `click <label>`, `toggle <label> on`, `focus <label>`, and
 //!   whatever the app logs with [`crate::Ui::log`]).
-//! - `LUMEN_UI_TEST_MAP=<file>`: after every frame whose layout changed, a
+//! - `LUMEN_UI_TEST_MAP=<file>`: after every frame that changed something, a
 //!   JSON description of the labelled widgets is written there (atomically):
-//!   `{"size":[w,h],"scale":s,"widgets":[{"kind":"button","label":"Add",
-//!   "x":..,"y":..,"w":..,"h":..,"hovered":false,"focused":false,
-//!   "value":"..."}]}` in logical window coordinates, so a test can click a
-//!   widget by its label.
+//!   `{"size":[w,h],"scale":s,"frames":n,"renders":m,"widgets":[{"kind":
+//!   "button","label":"Add","x":..,"y":..,"w":..,"h":..,"layer":0,
+//!   "hovered":false,"focused":false,"value":"..."}]}` in logical window
+//!   coordinates, so a test can click a widget by its label. `frames`
+//!   counts presented frames and `renders` the times `view` ran for a frame
+//!   (an idle window changes neither).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -57,23 +59,23 @@ impl TestLog {
     }
 
     /// Write the widget map if it changed.
-    pub fn write_map(&mut self, tree: &Tree, size: (f32, f32), scale: f32, focus: Option<crate::Id>, hovered: Option<crate::Id>) {
+    pub fn write_map(&mut self, tree: &Tree, size: (f32, f32), scale: f32, focus: Option<crate::Id>, hovered: Option<crate::Id>, counts: (u64, u64)) {
         let Some(path) = &self.map else { return };
-        let mut s = format!("{{\"size\":[{},{}],\"scale\":{},\"widgets\":[", size.0, size.1, scale);
+        let mut s = format!("{{\"size\":[{},{}],\"scale\":{},\"frames\":{},\"renders\":{},\"widgets\":[", size.0, size.1, scale, counts.0, counts.1);
         let mut first = true;
         // Visible part of each node: clipped by its clipping ancestors.
-        let mut stack: Vec<(u32, Rect)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.0, size.1))).collect();
+        let mut stack: Vec<(u32, Rect, u32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.0, size.1), r.layer)).collect();
         let mut order = Vec::new();
-        while let Some((i, clip)) = stack.pop() {
+        while let Some((i, clip, layer)) = stack.pop() {
             let n = &tree.nodes[i as usize];
-            order.push((i, clip));
+            order.push((i, clip, layer));
             let clip = if n.clip { clip.intersect(&n.rect) } else { clip };
             let kids: Vec<u32> = tree.children(i).collect();
             for c in kids.into_iter().rev() {
-                stack.push((c, clip));
+                stack.push((c, clip, layer));
             }
         }
-        for (i, clip) in order {
+        for (i, clip, layer) in order {
             let n = &tree.nodes[i as usize];
             let Some(label) = &n.label else { continue };
             if n.kind.is_empty() {
@@ -89,13 +91,14 @@ impl TestLog {
             first = false;
             let _ = write!(
                 s,
-                "{{\"kind\":{},\"label\":{},\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"hovered\":{},\"focused\":{}",
+                "{{\"kind\":{},\"label\":{},\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"layer\":{},\"hovered\":{},\"focused\":{}",
                 json_str(n.kind),
                 json_str(label),
                 r.x,
                 r.y,
                 r.w,
                 r.h,
+                layer,
                 n.id.is_some() && n.id == hovered,
                 n.id.is_some() && n.id == focus
             );

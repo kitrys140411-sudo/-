@@ -55,6 +55,8 @@ enum Redraw {
 
 struct Surface {
     output: Output,
+    /// Variable refresh rate can be switched without a modeset.
+    vrr_capable: bool,
     /// The wl_output global (removed when the connector goes away).
     global: smithay::reexports::wayland_server::backend::GlobalId,
     out: Out,
@@ -89,6 +91,34 @@ struct Device {
     _token: RegistrationToken,
 }
 
+/// When to use variable refresh rate (`LUMEN_VRR`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VrrMode {
+    Off,
+    /// Only while a fullscreen window (a game, a video) is on top: on the
+    /// desktop a fixed rate keeps animations and the cursor even.
+    Fullscreen,
+    Always,
+}
+
+impl VrrMode {
+    pub fn from_env() -> VrrMode {
+        match std::env::var("LUMEN_VRR").as_deref() {
+            Ok("off" | "0" | "no") => VrrMode::Off,
+            Ok("always" | "on" | "1") => VrrMode::Always,
+            _ => VrrMode::Fullscreen,
+        }
+    }
+
+    pub fn wanted(self, fullscreen_on_top: bool) -> bool {
+        match self {
+            VrrMode::Off => false,
+            VrrMode::Fullscreen => fullscreen_on_top,
+            VrrMode::Always => true,
+        }
+    }
+}
+
 pub struct UdevData {
     pub session: LibSeatSession,
     pub renderer: Option<GlesRenderer>,
@@ -97,10 +127,16 @@ pub struct UdevData {
     lh: LoopHandle<'static, Lumen>,
     /// libinput devices, for applying input settings and keyboard LEDs.
     input_devices: Vec<libinput::Device>,
+    /// Outputs are off (idle blanking): nothing is rendered until input.
+    blanked: bool,
+    vrr: VrrMode,
 }
 
 impl UdevData {
     pub fn queue_redraw(&mut self, output: &Output) {
+        if self.blanked {
+            return;
+        }
         let Some(dev) = self.device.as_mut() else { return };
         let Some((crtc, s)) = dev.surfaces.iter_mut().find(|(_, s)| &s.output == output) else { return };
         match &mut s.redraw {
@@ -113,6 +149,26 @@ impl UdevData {
                 *redraw_needed = true
             }
             Redraw::Queued => {}
+        }
+    }
+
+    /// DPMS off (the CRTCs are disabled) or back on: the next queued frame
+    /// re-enables an output, drawn in full.
+    pub fn set_blanked(&mut self, blanked: bool) {
+        self.blanked = blanked;
+        let Some(dev) = self.device.as_mut() else { return };
+        for s in dev.surfaces.values_mut() {
+            if let Redraw::WaitingForEstimatedVBlank { token, .. } = &s.redraw {
+                self.lh.remove(*token);
+            }
+            s.redraw = Redraw::Idle;
+            if blanked {
+                if let Err(e) = s.out.with_compositor(|c| c.clear()) {
+                    tracing::warn!("cannot blank {}: {e}", s.output.name());
+                }
+            } else {
+                s.out.reset_buffers();
+            }
         }
     }
 
@@ -177,14 +233,31 @@ fn pick_scale(info: &connector::Info, mode: &smithay::reexports::drm::control::M
 pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backend::session::libseat::LibSeatSessionNotifier) -> Result<(), String> {
     let lh = state.lh.clone();
     let seat = session.seat();
-    let path = udev::primary_gpu(&seat)
-        .ok()
-        .flatten()
-        .or_else(|| udev::all_gpus(&seat).ok()?.into_iter().next())
+    // Render and scan out on the boot GPU (the one the firmware lit up: on
+    // laptops with an iGPU and a dGPU, the iGPU driving the panel). Games can
+    // still render on the dGPU (DRI_PRIME, Vulkan device selection): their
+    // dmabufs are imported here. LUMEN_DRM_DEVICE overrides the choice.
+    let gpus = udev::all_gpus(&seat).unwrap_or_default();
+    let path = std::env::var_os("LUMEN_DRM_DEVICE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| udev::primary_gpu(&seat).ok().flatten())
+        .or_else(|| gpus.first().cloned())
         .ok_or("no GPU found")?;
+    if gpus.len() > 1 {
+        tracing::info!(gpus = ?gpus, "several GPUs; rendering on {}", path.display());
+    }
     let node = DrmNode::from_path(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     tracing::info!("using GPU {}", path.display());
-    state.backend = Backend::Udev(UdevData { session, renderer: None, device: None, node, lh: lh.clone(), input_devices: Vec::new() });
+    state.backend = Backend::Udev(UdevData {
+        session,
+        renderer: None,
+        device: None,
+        node,
+        lh: lh.clone(),
+        input_devices: Vec::new(),
+        blanked: false,
+        vrr: VrrMode::from_env(),
+    });
     add_device(state, &path, node)?;
 
     // Hotplug of connectors (device changed events).
@@ -394,12 +467,22 @@ fn scan_connectors(state: &mut Lumen) {
         match out {
             Ok(out) => {
                 let global = output.create_global::<Lumen>(&state.dh);
+                let vrr_capable = out
+                    .with_compositor(|c| c.vrr_supported(conn))
+                    .is_ok_and(|v| v == smithay::backend::drm::VrrSupport::Supported);
                 let refresh = Duration::from_secs_f64(1000.0 / wl_mode.refresh.max(1) as f64);
-                tracing::info!("output {name}: {}x{}@{:.2} scale {scale}", mode.size().0, mode.size().1, wl_mode.refresh as f64 / 1000.0);
+                tracing::info!(
+                    "output {name}: {}x{}@{:.2} scale {scale}{}",
+                    mode.size().0,
+                    mode.size().1,
+                    wl_mode.refresh as f64 / 1000.0,
+                    if vrr_capable { " (VRR capable)" } else { "" }
+                );
                 dev.surfaces.insert(
                     crtc,
                     Surface {
                         output: output.clone(),
+                        vrr_capable,
                         global,
                         out,
                         redraw: Redraw::Idle,
@@ -456,8 +539,12 @@ fn scan_connectors(state: &mut Lumen) {
 
 fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
     let now = state.now();
+    let fullscreen = state.wm.fullscreen_on_top();
     let (output, target) = {
         let Backend::Udev(d) = &mut state.backend else { return };
+        if d.blanked {
+            return;
+        }
         let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
         if s.redraw != Redraw::Queued {
             return;
@@ -471,10 +558,26 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
         let Backend::Udev(d) = backend else { return };
         let Some(renderer) = d.renderer.as_mut() else { return };
         let (elements, clear) = crate::render::build_scene(renderer, &mut ctx, &output);
+        let primary = ctx.primary.as_deref() == Some(&output.name());
+        let vrr = d.vrr;
         let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
+        // Variable refresh rate follows the fullscreen window (of the primary
+        // output, where windows are laid out).
+        if s.vrr_capable {
+            let want = vrr.wanted(fullscreen && primary);
+            if s.out.with_compositor(|c| c.vrr_enabled()) != want {
+                match s.out.with_compositor(|c| c.use_vrr(want)) {
+                    Ok(()) => tracing::info!(output = %s.output.name(), vrr = want, "variable refresh rate"),
+                    Err(e) => tracing::warn!("cannot switch VRR: {e:?}"),
+                }
+            }
+        }
         s.out
             .render_frame(renderer, &elements, clear, FrameFlags::DEFAULT)
             .map(|r| {
+                // A client buffer scanned out directly (fullscreen game or
+                // video): no composition at all for this frame.
+                let direct = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
                 // Without an exportable fence (software rendering, some drivers)
                 // KMS cannot wait for the GPU: wait here, or a half-rendered
                 // buffer would be scanned out.
@@ -483,11 +586,17 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
                         let _ = element.sync.wait();
                     }
                 }
-                !r.is_empty
+                (!r.is_empty, direct)
             })
             .map_err(|e| format!("{e:?}"))
     };
     let took = start.elapsed();
+    let result = result.map(|(damaged, direct)| {
+        if damaged {
+            state.stats.note_scanout(direct);
+        }
+        damaged
+    });
     match result {
         Ok(true) => {
             state.stats.push_render(took.as_secs_f32() * 1000.0);
@@ -545,6 +654,14 @@ fn on_vblank(state: &mut Lumen, crtc: crtc::Handle, metadata: &mut Option<DrmEve
     let animating = state.animating();
     let now = state.now();
     let Backend::Udev(d) = &mut state.backend else { return };
+    if d.blanked {
+        // The last flip before blanking: nothing more until input wakes us.
+        if let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) {
+            let _ = s.out.frame_submitted();
+            s.redraw = Redraw::Idle;
+        }
+        return;
+    }
     let lh = d.lh.clone();
     let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
     let time = metadata

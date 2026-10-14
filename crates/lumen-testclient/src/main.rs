@@ -7,9 +7,11 @@
 //! or a Wayland error occurs, 2 on bad arguments.
 
 mod args;
+mod gaming;
 mod handlers;
 mod out;
 mod paint;
+mod x11;
 
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
@@ -77,7 +79,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match run(opts) {
+    let result = if opts.x11 { x11::run(&opts) } else { run(opts) };
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("lumen-testclient: {e}");
@@ -164,6 +167,7 @@ pub(crate) struct App {
     /// on focus-in returns (the selection event may follow wl_keyboard.enter).
     paste_waiting: bool,
     popup: Option<PopupState>,
+    gaming: gaming::Gaming,
 }
 
 fn run(opts: Options) -> Result<u8, String> {
@@ -219,6 +223,7 @@ fn run(opts: Options) -> Result<u8, String> {
             (None, None)
         }
     };
+    let gaming = gaming::Gaming::bind(&globals, &qh, &opts);
     let window = xdg_shell.create_window(surface, WindowDecorations::ServerDefault, &qh);
     window.set_title(opts.title.clone());
     window.set_app_id(opts.app_id.clone());
@@ -282,6 +287,7 @@ fn run(opts: Options) -> Result<u8, String> {
         main_focused: false,
         paste_waiting: false,
         popup: None,
+        gaming,
         exit: None,
         opts,
     };
@@ -505,6 +511,9 @@ impl App {
         }
         if let Err(e) = self.main.buffers[idx].attach_to(&surface) {
             eprintln!("lumen-testclient: attach: {e}");
+        }
+        if !self.ready {
+            self.gaming_surface_ready();
         }
         surface.commit();
         self.mapped_size = self.size;

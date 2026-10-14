@@ -308,3 +308,138 @@ def wait_for_file(pattern, directory, timeout=20):
                     return os.path.join(directory, name)
         time.sleep(0.05)
     raise AssertionError(f"no file /{pattern}/ in {directory}")
+
+
+class UiApp:
+    """A lumen-ui app under test, driven by widget label like a user would.
+
+    Started with LUMEN_UI_TEST=1 (event lines such as `click Save` on stdout)
+    and LUMEN_UI_TEST_MAP (its labelled widgets as JSON after every frame that
+    changed something, with `frames`/`renders` counters); clicks and keys go
+    through the compositor's synthetic input. Labels are the widget map's:
+    the text of labels and buttons, the names of inputs, switches, sliders and
+    lists, icon names of icon-only buttons.
+    """
+
+    def __init__(self, compositor, binary, *args, app_id=None, env=None, name=None):
+        c = self.c = compositor
+        n = len(c.clients)
+        self.map_path = os.path.join(c.workdir, f"uimap{n}.json")
+        e = dict(c.env)
+        e.update({"WAYLAND_DISPLAY": c.socket, "LUMEN_UI_TEST": "1", "LUMEN_UI_TEST_MAP": self.map_path})
+        if env:
+            e.update(env)
+        self.app_id = app_id or os.path.basename(binary)
+        self.client = Client(binary, e, list(args), os.path.join(c.workdir, f"app{n}-{name or self.app_id}.log"))
+        c.clients.append(self.client)
+        self.client.wait_line(r"^ready", 60)
+        c.wait(lambda: (self.window() or {}).get("mapped"), 30, f"{self.app_id} window")
+        c.settle()
+
+    # -- state ---------------------------------------------------------------------
+    def window(self):
+        for w in self.c.windows():
+            if w["app_id"] == self.app_id:
+                return w
+        return None
+
+    def map(self):
+        for _ in range(100):
+            try:
+                with open(self.map_path) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                time.sleep(0.02)
+        raise AssertionError(f"no widget map at {self.map_path}")
+
+    def widgets(self, kind=None):
+        return [w for w in self.map()["widgets"] if kind is None or w["kind"] == kind]
+
+    def find(self, label, kind=None):
+        """The topmost widget labelled `label` (and of `kind`), or None."""
+        for w in reversed(self.widgets(kind)):
+            if w["label"] == label:
+                return w
+        return None
+
+    def widget(self, label, kind=None, timeout=10):
+        return self.c.wait(lambda: self.find(label, kind), timeout, f"widget {label!r}")
+
+    def wait_gone(self, label, kind=None, timeout=10):
+        self.c.wait(lambda: self.find(label, kind) is None, timeout, f"widget {label!r} to go away")
+
+    def focused(self):
+        return next((w for w in self.widgets() if w["focused"]), None)
+
+    # -- input -----------------------------------------------------------------------
+    def point(self, w, fx=0.5, fy=0.5):
+        """Screen position of a point of widget `w` (fractions of its box)."""
+        win = self.window()
+        s = self.map().get("scale", 1) / (self.c.scale or 1)
+        return win["x"] + (w["x"] + w["w"] * fx) * s, win["y"] + (w["y"] + w["h"] * fy) * s
+
+    def click(self, label, kind=None, button=BTN_LEFT, double=False, fx=0.5, fy=0.5):
+        w = self.widget(label, kind)
+        x, y = self.point(w, fx, fy)
+        self.c.pointer(x, y)
+        for _ in range(2 if double else 1):
+            self.c.button(button, True)
+            self.c.button(button, False)
+        return w
+
+    def hover(self, label, kind=None):
+        x, y = self.point(self.widget(label, kind))
+        self.c.pointer(x, y)
+
+    def scroll(self, label, dy, kind=None):
+        """Wheel over a widget; positive `dy` scrolls toward the end (15 per notch)."""
+        self.hover(label, kind)
+        self.c.ipc(f"scroll {dy}")
+
+    # -- events ----------------------------------------------------------------------
+    def mark(self):
+        """A position in the event log for `wait_log(..., since=)`."""
+        return len(self.client.lines)
+
+    def lines(self, since=0):
+        return self.client.lines[since:]
+
+    def wait_log(self, pattern, since=0, timeout=20):
+        rx = re.compile(pattern)
+        def seen():
+            for line in self.client.lines[since:]:
+                m = rx.search(line)
+                if m:
+                    return m
+            return None
+        try:
+            return self.c.wait(seen, timeout, f"log /{pattern}/")
+        except AssertionError:
+            raise AssertionError(f"app never logged /{pattern}/; got:\n" + "\n".join(self.client.lines[since:][-30:])) from None
+
+
+# -- X11 clients (Xwayland) ---------------------------------------------------------
+def x11_env(c, timeout=30):
+    """Environment for X11 clients of compositor `c`: DISPLAY of its Xwayland, once ready."""
+    def ready():
+        x = json.loads(c.ipc("xwayland"))
+        return x if x["ready"] else None
+    x = c.wait(ready, timeout, "Xwayland to be ready")
+    env = dict(c.env)
+    env["DISPLAY"] = x["display"]
+    env.pop("WAYLAND_DISPLAY", None)
+    return env
+
+
+def x11_client(c, *args, name=None):
+    """`lumen-testclient --x11 ARGS` on the compositor's Xwayland."""
+    env = x11_env(c)
+    n = len(c.clients)
+    cl = Client(c.client_binary, env, ["--x11", *args], os.path.join(c.workdir, f"x11client{n}-{name or 'x'}.log"))
+    c.clients.append(cl)
+    return cl
+
+
+def x11_run(c, *cmd, stdin=None, timeout=10):
+    """Run an X11 tool (xprop, xclip -o, xwininfo, ...) to completion; returns CompletedProcess."""
+    return subprocess.run(list(cmd), env=x11_env(c), input=stdin, capture_output=True, text=True, timeout=timeout)

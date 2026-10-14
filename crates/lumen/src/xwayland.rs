@@ -105,6 +105,23 @@ impl XwaylandState {
     }
 }
 
+/// X11 sockets live in /tmp/.X11-unix (sticky, world-writable, like /tmp).
+/// Init normally creates it; a compositor started elsewhere makes it itself.
+fn ensure_x11_socket_dir() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = std::path::Path::new("/tmp/.X11-unix");
+    if dir.is_dir() {
+        return;
+    }
+    match std::fs::DirBuilder::new().mode(0o1777).create(dir) {
+        // The umask narrowed the mode: set it explicitly.
+        Ok(()) => {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777));
+        }
+        Err(e) => tracing::warn!("cannot create {}: {e}", dir.display()),
+    }
+}
+
 /// Environment passed on to Xwayland (smithay clears all but PATH and
 /// XDG_RUNTIME_DIR): driver selection and debugging knobs.
 fn xwayland_env() -> Vec<(String, String)> {
@@ -123,6 +140,7 @@ impl Lumen {
         if !x.enabled || x.client.is_some() || x.failures >= MAX_FAILURES {
             return;
         }
+        ensure_x11_socket_dir();
         // Its log is useful for debugging X apps but noisy (-verbose): it
         // goes next to the control socket, not into the compositor's log.
         let log_path = crate::ipc::socket_path().with_file_name("xwayland.log");

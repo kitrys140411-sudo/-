@@ -10,3 +10,6 @@ license.workspace = true
 # wayland-client, wayland-protocols and calloop are used through sctk's re-exports
 # so their versions always match the ones sctk was built against.
 smithay-client-toolkit = "0.19.2"
+# --x11 mode: the same scriptable client as an X11 application (pure-Rust
+# protocol implementation, no libxcb).
+x11rb = "0.13"

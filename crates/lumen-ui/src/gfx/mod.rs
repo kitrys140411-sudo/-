@@ -361,6 +361,8 @@ pub struct Renderer {
     pub atlas: Atlas<GlyphKey>,
     textures: HashMap<u32, Texture>,
     next_texture: u32,
+    /// Image textures created so far (see [`Atlas::uploads`]).
+    pub texture_uploads: u64,
     // Scratch arrays for draw lists (kept to avoid reallocating every frame).
     rects: Vec<RectInst>,
     glyphs: Vec<GlyphInst>,
@@ -463,6 +465,7 @@ impl Renderer {
                 atlas: Atlas::new(),
                 textures: HashMap::new(),
                 next_texture: 1,
+                texture_uploads: 0,
                 rects: Vec::new(),
                 glyphs: Vec::new(),
                 images: Vec::new(),
@@ -706,6 +709,7 @@ impl Renderer {
         }
         let handle = self.next_texture;
         self.next_texture += 1;
+        self.texture_uploads += 1;
         self.textures.insert(handle, Texture { id, size: (width, height) });
         handle
     }

@@ -9,6 +9,7 @@ mod backlight;
 mod cursor;
 mod cursor_art;
 mod focus;
+mod gaming;
 mod handlers;
 mod icons;
 mod icontheme;
@@ -53,7 +54,8 @@ environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_INPUT
              LUMEN_SCALE, LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS/MODEL (override input.toml),
              XCURSOR_THEME, XCURSOR_SIZE, LUMEN_INIT_CONTROL (init's socket), LUMEN_SYSFS (/sys for batteries
              and backlights), LUMEN_POWER_POLL_MS, LUMEN_OUTPUT_NAME (headless output name),
-             LUMEN_XWAYLAND=0 (no X11 support)";
+             LUMEN_XWAYLAND=0 (no X11 support), LUMEN_IDLE_BLANK (minutes until the screen blanks, 0 = never),
+             LUMEN_VRR (fullscreen|off|always), LUMEN_DRM_DEVICE (GPU to render on, default: the boot GPU)";
 
 struct Args {
     backend: String,

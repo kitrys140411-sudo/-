@@ -558,6 +558,12 @@ impl Ui {
         id
     }
 
+    /// The id of a popup menu: scoped like widgets but not counted, so
+    /// opening and showing it may happen at different places in `view`.
+    pub(crate) fn popup_menu_id(&self, key: impl Hash) -> Id {
+        self.scope.with(("popup-menu", key))
+    }
+
     /// Build `f` with ids scoped under `key` (use in loops over items so
     /// each item's widgets keep their state when others are added or removed).
     pub fn push_id<R>(&mut self, key: impl Hash, f: impl FnOnce(&mut Ui) -> R) -> R {
@@ -626,6 +632,8 @@ impl Ui {
         let hovered = inp.hovered == Some(id);
         let click = inp.click(id, Button::Left);
         let active = inp.active.map(|a| a.0) == Some(id);
+        // The movement before a release in the same frame still counts.
+        let moving = (active && inp.dragging) || inp.drag_released == Some(id);
         let mut r = Response {
             id,
             rect,
@@ -638,7 +646,7 @@ impl Ui {
             drag_started: inp.drag_started == Some(id),
             dragging: active && inp.dragging,
             drag_released: inp.drag_released == Some(id),
-            drag_delta: if active && inp.dragging { inp.drag_delta } else { Vec2::ZERO },
+            drag_delta: if moving { inp.drag_delta } else { Vec2::ZERO },
             focused: inp.focus == Some(id),
             changed: false,
             submitted: false,

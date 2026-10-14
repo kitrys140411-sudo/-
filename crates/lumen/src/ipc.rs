@@ -23,6 +23,10 @@
 //!   layout <n>               make keyboard layout n (0-based) active
 //!   switch lid closed|open   a laptop lid switch event (as from libinput)
 //!   xwayland                 X11 support: display, readiness, cost, override-redirect windows (JSON)
+//!   motion <dx> <dy>         relative pointer motion (a mouse, not a tablet)
+//!   idle                     idle state: inhibitors, blanking, timeout (JSON)
+//!   idle-timeout <seconds>   blank the screen after this long without input (0: never)
+//!   scene                    whether the frame could be scanned out without composition (JSON)
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -164,6 +168,7 @@ impl Lumen {
             ("cursor", []) => {
                 use smithay::input::pointer::CursorImageStatus;
                 let shape = match &self.cursor_status {
+                    _ if self.pointer_locked() => "hidden".to_string(),
                     CursorImageStatus::Hidden => "hidden".to_string(),
                     CursorImageStatus::Named(icon) => icon.name().to_string(),
                     CursorImageStatus::Surface(_) => "surface".to_string(),
@@ -180,6 +185,27 @@ impl Lumen {
             },
             ("input", []) => self.ipc_input(),
             ("xwayland", []) => self.ipc_xwayland(),
+            ("idle", []) => self.ipc_idle(),
+            ("idle-timeout", [secs]) => match secs.parse::<f64>() {
+                Ok(v) if v >= 0.0 => {
+                    self.set_idle_timeout((v > 0.0).then(|| std::time::Duration::from_secs_f64(v)));
+                    "ok".into()
+                }
+                _ => "error bad timeout".into(),
+            },
+            ("motion", [dx, dy]) => match (dx.parse::<f64>(), dy.parse::<f64>()) {
+                (Ok(dx), Ok(dy)) => {
+                    let d = smithay::utils::Point::from((dx, dy));
+                    let utime = self.now().as_micros() as u64;
+                    self.on_pointer_moved(self.pointer_pos + d, time, Some((d, d, utime)));
+                    "ok".into()
+                }
+                _ => "error bad motion".into(),
+            },
+            ("scene", []) => match self.ipc_scene() {
+                Ok(s) => s,
+                Err(e) => format!("error {e}"),
+            },
             ("reload-input", []) => match self.reload_input() {
                 Ok(summary) => format!("ok {summary}"),
                 Err(e) => format!("error {}", e.replace('\n', "; ")),
@@ -509,6 +535,39 @@ impl Lumen {
         )
     }
 
+    fn ipc_idle(&self) -> String {
+        let i = &self.idle;
+        let constraint = match self.active_constraint() {
+            Some((_, _, crate::gaming::Constraint::Locked)) => "\"locked\"",
+            Some((_, _, crate::gaming::Constraint::Confined(_))) => "\"confined\"",
+            None => "null",
+        };
+        format!(
+            "{{\"idle_ms\":{},\"timeout_s\":{},\"blanked\":{},\"inhibited\":{},\"inhibitors\":{},\"shortcuts_inhibited\":{},\"pointer_constraint\":{constraint}}}",
+            self.now().saturating_sub(i.last_input).as_millis(),
+            i.timeout.map(|t| format!("{:.3}", t.as_secs_f64())).unwrap_or_else(|| "null".into()),
+            i.blanked,
+            self.idle_inhibited(),
+            i.inhibitors.iter().filter(|s| smithay::utils::IsAlive::alive(*s)).count(),
+            self.shortcuts_inhibited(),
+        )
+    }
+
+    fn ipc_scene(&mut self) -> Result<String, String> {
+        let output = self.primary_output().cloned().ok_or("no output")?;
+        let size = crate::render::output_physical_size(&output);
+        let scale = output.current_scale().fractional_scale();
+        let (backend, mut ctx) = self.split_for_render();
+        let r = match backend {
+            Backend::Udev(d) => d.renderer.as_mut().ok_or("no renderer")?,
+            Backend::Winit(d) => d.backend.renderer(),
+            Backend::Headless(d) => &mut d.renderer,
+            Backend::None => return Err("no backend".into()),
+        };
+        let (elements, _) = crate::render::build_scene(r, &mut ctx, &output);
+        Ok(crate::render::scanout_check(r, &elements, size, scale))
+    }
+
     fn ipc_outputs(&self) -> String {
         let items: Vec<String> = self
             .outputs
@@ -532,8 +591,10 @@ impl Lumen {
         let s = &self.stats;
         let avg = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
         format!(
-            "{{\"backend\":\"{}\",\"frames\":{},\"render_ms_avg\":{:.3},\"render_ms_p99\":{:.3},\"render_ms_max\":{:.3},\"interval_ms_avg\":{:.3},\"interval_ms_max\":{:.3},\"interval_samples\":{},\"missed\":{},\"animating\":{},\"overview\":{},\"workspace\":{}}}",
+            "{{\"backend\":\"{}\",\"scanout_frames\":{},\"composited_frames\":{},\"frames\":{},\"render_ms_avg\":{:.3},\"render_ms_p99\":{:.3},\"render_ms_max\":{:.3},\"interval_ms_avg\":{:.3},\"interval_ms_max\":{:.3},\"interval_samples\":{},\"missed\":{},\"animating\":{},\"overview\":{},\"workspace\":{}}}",
             self.backend.name(),
+            s.scanout_frames,
+            s.composited_frames,
             s.frames,
             avg(&s.render_ms),
             percentile(&s.render_ms, 0.99),

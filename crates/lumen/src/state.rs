@@ -66,6 +66,10 @@ pub struct FrameStats {
     pub interval_ms: Vec<f32>,
     pub last_present: Option<Duration>,
     pub missed: u64,
+    /// Frames whose primary plane showed a client buffer directly (KMS).
+    pub scanout_frames: u64,
+    /// Frames that were composited (KMS).
+    pub composited_frames: u64,
 }
 
 impl FrameStats {
@@ -75,6 +79,14 @@ impl FrameStats {
             self.render_ms.remove(0);
         }
         self.render_ms.push(ms);
+    }
+
+    pub fn note_scanout(&mut self, direct: bool) {
+        if direct {
+            self.scanout_frames += 1;
+        } else {
+            self.composited_frames += 1;
+        }
     }
 
     /// Record a presentation; `animating` intervals count toward missed frames.
@@ -172,6 +184,13 @@ pub struct Lumen {
     /// When suspend was last requested (boot clock, includes time asleep).
     pub last_suspend: Option<Duration>,
     pub xwayland: crate::xwayland::XwaylandState,
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
+    pub shortcuts_inhibit_state: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    /// The surface whose pointer constraint is active.
+    pub constrained: Option<WlSurface>,
+    pub idle: crate::gaming::Idle,
 }
 
 impl Lumen {
@@ -212,6 +231,10 @@ impl Lumen {
         let xdg_activation_state = XdgActivationState::new::<Lumen>(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Lumen>(&dh);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Lumen>(&dh);
+        let pointer_constraints_state = smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Lumen>(&dh);
+        let relative_pointer_state = smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Lumen>(&dh);
+        let shortcuts_inhibit_state = smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Lumen>(&dh);
+        let idle_inhibit_state = smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Lumen>(&dh);
         let xwayland = crate::xwayland::XwaylandState::new(smithay::wayland::xwayland_shell::XWaylandShellState::new::<Lumen>(&dh));
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -304,6 +327,12 @@ impl Lumen {
             lid_closed: false,
             last_suspend: None,
             xwayland,
+            pointer_constraints_state,
+            relative_pointer_state,
+            shortcuts_inhibit_state,
+            idle_inhibit_state,
+            constrained: None,
+            idle: crate::gaming::Idle::new(),
         }
     }
 
@@ -357,6 +386,8 @@ impl Lumen {
         tracing::info!("first frame presented");
         // X11 support starts once the desktop is on screen (off the boot path).
         self.lh.insert_idle(|state| state.start_xwayland());
+        // The idle clock starts with the desktop.
+        self.note_input();
         for (title, body) in std::mem::take(&mut self.startup_notices) {
             self.notify(&title, &body);
         }

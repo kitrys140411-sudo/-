@@ -285,6 +285,27 @@ impl Response {
 }
 
 impl Ui {
+    /// Open the menu `key` at `pos` (window coordinates), e.g. at the
+    /// position a [`ListView`](super::ListView) reports for a right click
+    /// on one of its items. Show it with [`Ui::popup_menu`] every frame.
+    pub fn open_popup_menu(&mut self, key: impl Hash, pos: Vec2) {
+        let id = self.popup_menu_id(key);
+        open_menu(self, id, Anchor::At(pos), 0.0, false);
+    }
+
+    /// Build the menu `key` if it is open (see [`Ui::open_popup_menu`]);
+    /// true when an item was chosen.
+    pub fn popup_menu(&mut self, key: impl Hash, f: impl FnOnce(&mut MenuUi)) -> bool {
+        let id = self.popup_menu_id(key);
+        show_menu(self, id, f)
+    }
+
+    /// The menu `key` is open.
+    pub fn popup_menu_open(&mut self, key: impl Hash) -> bool {
+        let id = self.popup_menu_id(key);
+        is_open(self, id)
+    }
+
     /// An icon button that opens a menu below it.
     pub fn menu_button(&mut self, icon: Icon, key: impl Hash, f: impl FnOnce(&mut MenuUi)) -> Response {
         let r = super::Button::icon_only(icon).id(("menu-button", key)).toggled(false).show(self);

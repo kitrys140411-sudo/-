@@ -160,9 +160,13 @@ impl Input {
                 self.pointer = Some(pos);
                 let hit = self.hover_at(pos).copied();
                 self.hovered = hit.map(|h| h.id);
-                // A click focuses what it hits (or nothing); presses on
-                // backdrops (modal scrims, outside menus) leave focus alone.
-                if button == Button::Left && !hit.is_some_and(|h| h.sense.blocking) {
+                // A click focuses what it hits (or nothing). Presses on
+                // backdrops (modal scrims, outside menus) and on overlay
+                // parts that take no focus (menu items, toasts) leave the
+                // focus where it was, so choosing "Paste" from an input's
+                // menu keeps typing in that input.
+                let keeps = hit.is_some_and(|h| h.sense.blocking || (h.layer > 0 && h.focus.is_none()));
+                if button == Button::Left && !keeps {
                     self.focus = hit.and_then(|h| h.focus);
                     self.focus_visible = false;
                 }

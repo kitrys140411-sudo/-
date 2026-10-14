@@ -146,8 +146,12 @@ impl Lumen {
 
     /// Process a key from any source (input backend or the IPC socket).
     pub fn handle_key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
+        self.note_input();
         let serial = SERIAL_COUNTER.next_serial();
         let Some(keyboard) = self.seat.get_keyboard() else { return };
+        // A window that inhibits shortcuts gets every key, except shortcuts
+        // with Super: those always reach the compositor (the way out).
+        let inhibited = self.shortcuts_inhibited();
         // A held shortcut repeats until its key is released or another is pressed.
         if state == KeyState::Pressed || self.key_repeat.as_ref().is_some_and(|(k, _)| *k == keycode) {
             self.stop_key_repeat();
@@ -163,9 +167,10 @@ impl Lumen {
                 lumen.shell.super_tap = is_super(raw_sym);
                 // Alt+Shift-style chords arm when a modifier press completes
                 // them; any other key disarms them.
-                lumen.mod_chord = if modifier { lumen.keys.lookup_modifiers(m).map(|_| m) } else { None };
+                let allowed = !inhibited || m.logo;
+                lumen.mod_chord = if modifier && allowed { lumen.keys.lookup_modifiers(m).map(|_| m) } else { None };
                 let syms = KeySyms { layouts, raw: raw_sym, modified: sym };
-                let bound = fixed_shortcut(mods, sym).or_else(|| lumen.keys.lookup(m, &syms).map(|b| b.action.clone()));
+                let bound = fixed_shortcut(mods, sym).or_else(|| lumen.keys.lookup(m, &syms).filter(|_| allowed).map(|b| b.action.clone()));
                 if let Some(a) = bound {
                     lumen.suppressed_keys.push(keycode);
                     return FilterResult::Intercept(a);
@@ -389,7 +394,13 @@ impl Lumen {
         time: u32,
         relative: Option<(Point<f64, Logical>, Point<f64, Logical>, u64)>,
     ) {
-        let pos = self.clamp_pointer(pos);
+        self.note_input();
+        let mut pos = self.clamp_pointer(pos);
+        // A locked pointer stays put (the game gets relative motion only); a
+        // confined one stays in its region.
+        if self.wm.grab.is_none() && self.constrained_motion(&mut pos, relative) {
+            return;
+        }
         let prev = self.pointer_pos;
         self.pointer_pos = pos;
         let serial = SERIAL_COUNTER.next_serial();
@@ -419,6 +430,7 @@ impl Lumen {
             pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel, utime });
         }
         pointer.frame(self);
+        self.update_pointer_constraints();
         self.queue_redraw_all();
     }
 
@@ -441,6 +453,7 @@ impl Lumen {
         let under = under.map(|(s, loc)| (FocusTarget::Surface(s), loc));
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
         pointer.frame(self);
+        self.update_pointer_constraints();
     }
 
     /// Track the pointer's target; leaving client surfaces for the shell or
@@ -454,6 +467,7 @@ impl Lumen {
     }
 
     pub fn handle_button(&mut self, button: u32, state: ButtonState, time: u32) {
+        self.note_input();
         let serial = SERIAL_COUNTER.next_serial();
         self.refresh_pointer_focus();
         let Some(pointer) = self.seat.get_pointer() else { return };
@@ -505,6 +519,7 @@ impl Lumen {
     }
 
     fn on_axis<B: InputBackend>(&mut self, evt: B::PointerAxisEvent) {
+        self.note_input();
         self.shell.super_tap = false;
         self.mod_chord = None;
         let h = evt.amount(Axis::Horizontal).unwrap_or_else(|| evt.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0);

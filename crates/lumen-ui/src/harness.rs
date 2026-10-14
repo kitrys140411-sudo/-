@@ -78,6 +78,12 @@ impl Harness {
         &mut self.ui
     }
 
+    /// Whether a font family is installed (tests that compare text
+    /// geometry skip without Inter).
+    pub fn has_font(&self, family: &str) -> bool {
+        self.ui.fonts.db.faces.iter().any(|f| f.family == family)
+    }
+
     pub fn resize(&mut self, width: f32, height: f32) {
         self.ui.window.size = Vec2::new(width, height);
     }
@@ -215,6 +221,11 @@ impl Harness {
         self.events.push_back(Event::Scroll { pos: p, delta: Vec2::new(0.0, dy), wheel: true, kinetic_end: false });
     }
 
+    /// Scroll at a point by `dy` pixels (wheel).
+    pub fn scroll_at(&mut self, p: Vec2, dy: f32) {
+        self.events.push_back(Event::Scroll { pos: p, delta: Vec2::new(0.0, dy), wheel: true, kinetic_end: false });
+    }
+
     pub fn key(&mut self, key: Key, mods: Mods) {
         self.ui.input.mods = mods;
         self.events.push_back(Event::Key(KeyPress { key, mods, text: None, repeat: false }));
@@ -250,7 +261,7 @@ mod tests {
 
     fn harness() -> Option<Harness> {
         let h = Harness::new(640.0, 480.0).ok()?;
-        if !h.ui.fonts.db.faces.iter().any(|f| f.family == "Inter") {
+        if !h.has_font("Inter") {
             eprintln!("Inter not installed; skipping");
             return None;
         }

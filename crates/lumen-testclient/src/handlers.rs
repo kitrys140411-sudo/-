@@ -245,6 +245,7 @@ impl SeatHandler for App {
             if let Some(manager) = &self.data_device_manager {
                 self.data_device = Some(manager.get_data_device(qh, &seat));
             }
+            self.gaming_seat_ready(&seat);
         }
         match capability {
             Capability::Keyboard if self.keyboard.is_none() => {
@@ -259,6 +260,7 @@ impl SeatHandler for App {
                         if let Some(manager) = &self.cursor_shape_manager {
                             self.cursor_device = Some(manager.get_shape_device(&pointer, qh));
                         }
+                        self.gaming_pointer_ready(&pointer);
                         self.pointer = Some(pointer);
                     }
                     Err(e) => eprintln!("lumen-testclient: wl_pointer: {e}"),

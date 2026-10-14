@@ -65,6 +65,13 @@ impl Backend {
         }
     }
 
+    /// Turn the outputs off (idle) or back on.
+    pub fn set_blanked(&mut self, blanked: bool) {
+        if let Backend::Udev(d) = self {
+            d.set_blanked(blanked);
+        }
+    }
+
     pub fn update_leds(&mut self, leds: smithay::input::keyboard::LedState) {
         if let Backend::Udev(d) = self {
             d.update_leds(leds);
@@ -123,6 +130,7 @@ impl Lumen {
     /// scene context, so a frame can be built while the renderer is borrowed.
     pub fn split_for_render(&mut self) -> (&mut Backend, SceneCtx<'_>) {
         let now = self.now();
+        let cursor_hidden = self.pointer_locked();
         let Lumen { backend, wm, shell, theme, cursor_theme, cursor_status, dnd_icon, pointer_pos, render, stats, outputs, .. } = self;
         let ctx = SceneCtx {
             wm,
@@ -135,6 +143,7 @@ impl Lumen {
             dnd_icon: dnd_icon.as_ref(),
             primary: outputs.first().map(|o| o.name()),
             pointer: *pointer_pos,
+            cursor_hidden,
             rs: render,
             now,
         };

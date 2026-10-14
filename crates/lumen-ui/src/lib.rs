@@ -19,6 +19,8 @@ mod testing;
 pub mod text;
 pub mod theme;
 mod tree;
+#[cfg(test)]
+mod widget_tests;
 mod ui;
 pub mod widgets;
 mod window;
@@ -41,6 +43,16 @@ pub use tree::{Anchor, Sense};
 pub use ui::{CursorIcon, Response, Ui};
 pub use widgets::*;
 pub use window::{run, Waker};
+
+/// Everything an app usually needs: `use lumen_ui::prelude::*;`.
+pub mod prelude {
+    pub use crate::files::{self, DirEntry, Place};
+    pub use crate::widgets::*;
+    pub use crate::{
+        channel, run, Align, Anchor, App, Color, CursorIcon, Icon, Id, Image, Insets, Justify, Key, KeyPress, Mods, Options, Painter, Rect,
+        Receiver, Response, Sender, Sense, Shortcut, Size, Sizing, Task, TextAlign, TextStyle, Theme, Ui, Vec2, Waker, Weight, Wrap,
+    };
+}
 
 /// An application: its state and how it looks.
 pub trait App {

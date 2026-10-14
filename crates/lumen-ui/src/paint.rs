@@ -3,6 +3,14 @@
 //! (fades). Fills are snapped to device pixels so edges stay crisp at any
 //! scale; text keeps subpixel positions horizontally and whole-pixel
 //! baselines.
+//!
+//! Blending happens in linear light (gamma-correct anti-aliasing and text),
+//! but translucent theme colors are written the way designers and the
+//! desktop's compositor mix them: in sRGB (a hover tint of 12 % white is
+//! meant to look like 12 % of the way to white). Blended in linear light
+//! such a tint looks several times brighter, so the alpha of a translucent
+//! color is adjusted to give, over the window background, the sRGB result
+//! it was designed for.
 
 use std::rc::Rc;
 
@@ -32,10 +40,21 @@ pub struct Painter<'a> {
     offsets: Vec<Vec2>,
     opacity: f32,
     opacities: Vec<f32>,
+    /// The window background (the typical backdrop of translucent colors).
+    backdrop: Color,
+    /// The last translucent color adjusted, and the alpha it got.
+    last_alpha: std::cell::Cell<(Color, f32)>,
 }
 
 impl<'a> Painter<'a> {
-    pub(crate) fn new(list: &'a mut DrawList, renderer: &'a mut Renderer, images: &'a mut ImageCache, lib: &'a Rc<Library>, scale: f32) -> Painter<'a> {
+    pub(crate) fn new(
+        list: &'a mut DrawList,
+        renderer: &'a mut Renderer,
+        images: &'a mut ImageCache,
+        lib: &'a Rc<Library>,
+        scale: f32,
+        backdrop: Color,
+    ) -> Painter<'a> {
         let (w, h) = renderer.canvas_size;
         Painter {
             list,
@@ -49,6 +68,8 @@ impl<'a> Painter<'a> {
             offsets: Vec::new(),
             opacity: 1.0,
             opacities: Vec::new(),
+            backdrop,
+            last_alpha: std::cell::Cell::new((Color::TRANSPARENT, 0.0)),
         }
     }
 
@@ -58,7 +79,26 @@ impl<'a> Painter<'a> {
     }
 
     fn color(&self, c: Color) -> [f32; 4] {
-        c.fade(self.opacity).linear_premul()
+        let c = c.fade(self.opacity);
+        let a = self.blend_alpha(c);
+        let [r, g, b, _] = c.with_alpha(1.0).linear_premul();
+        [r * a, g * a, b * a, a]
+    }
+
+    /// The alpha that makes `c` blended in linear light over the backdrop
+    /// look like `c` blended in sRGB (see the module docs).
+    fn blend_alpha(&self, c: Color) -> f32 {
+        let a = c.a.clamp(0.0, 1.0);
+        if a <= 0.0 || a >= 1.0 {
+            return a;
+        }
+        let (last, alpha) = self.last_alpha.get();
+        if last == c {
+            return alpha;
+        }
+        let out = c.srgb_blend_alpha(self.backdrop);
+        self.last_alpha.set((c, out));
+        out
     }
 
     /// Physical rectangle of a logical one, edges snapped to pixels.

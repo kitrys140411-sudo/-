@@ -86,6 +86,23 @@ impl Color {
     pub fn is_transparent(self) -> bool {
         self.a <= 0.0
     }
+
+    /// The alpha that makes this color, blended in linear light over
+    /// `backdrop`, give the same luminance as blending it in sRGB (how
+    /// theme colors are designed and how the desktop draws them; see
+    /// [`crate::Painter`]).
+    pub fn srgb_blend_alpha(self, backdrop: Color) -> f32 {
+        let a = self.a.clamp(0.0, 1.0);
+        if a <= 0.0 || a >= 1.0 {
+            return a;
+        }
+        let (lc, lb) = (self.luminance(), backdrop.luminance());
+        if (lc - lb).abs() < 0.01 {
+            return a;
+        }
+        let mixed = backdrop.with_alpha(1.0).mix(self.with_alpha(1.0), a).luminance();
+        ((mixed - lb) / (lc - lb)).clamp(0.0, 1.0)
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +120,20 @@ mod tests {
         assert!((o.r - 0.25).abs() < 1e-6 && (o.a - 1.0).abs() < 1e-6);
         assert_eq!(Color::WHITE.linear_premul(), [1.0, 1.0, 1.0, 1.0]);
         assert!(Color::hex("#7aa2f7").luminance() > Color::hex("#101014").luminance());
+    }
+
+    #[test]
+    fn translucent_colors_blend_as_designed() {
+        let bg = Color::hex("#18181c");
+        let tint = Color::WHITE.with_alpha(0.12);
+        let a = tint.srgb_blend_alpha(bg);
+        assert!(a > 0.01 && a < 0.06, "much less than 0.12 in linear light: {a}");
+        // Linear blend with the new alpha == sRGB blend with the old one.
+        let lin = |c: Color| c.luminance();
+        let linear = lin(Color::WHITE) * a + lin(bg) * (1.0 - a);
+        let srgb = lin(bg.mix(Color::WHITE, 0.12));
+        assert!((linear - srgb).abs() < 1e-4, "{linear} vs {srgb}");
+        assert_eq!(Color::WHITE.srgb_blend_alpha(bg), 1.0, "opaque stays opaque");
+        assert_eq!(Color::hex("#1a1a1e80").srgb_blend_alpha(bg), Color::hex("#1a1a1e80").a, "near the backdrop: unchanged");
     }
 }

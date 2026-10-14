@@ -18,6 +18,10 @@ use super::{Button, Frame, Label, TextInput};
 #[derive(Default)]
 struct DialogState {
     was_open: bool,
+    /// The frame it was last shown in: an app may stop showing a dialog
+    /// instead of passing `open = false` (dropping a file chooser), so a
+    /// dialog not shown in the previous frame opens afresh.
+    shown: u64,
 }
 
 #[must_use = "a Dialog does nothing until shown"]
@@ -53,7 +57,14 @@ impl Dialog {
             }
             return None;
         }
-        let first = !std::mem::replace(&mut ui.state::<DialogState>(id).was_open, true);
+        let frame = ui.frame;
+        let st = ui.state::<DialogState>(id);
+        let first = !st.was_open || st.shown + 1 < frame;
+        st.was_open = true;
+        st.shown = frame;
+        if first {
+            ui.forget(id.with("in"));
+        }
         let t = ui.theme().clone();
         let appear = ui.animate_from(id.with("in"), 0.0, 1.0, SpringParams::POPOVER);
         // Backdrop: dims the window and takes every pointer event below.

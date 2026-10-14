@@ -284,6 +284,7 @@ impl Lumen {
             self.refresh_pointer_focus();
             self.queue_redraw_all();
         }
+        self.update_pointer_constraints();
     }
 
     pub fn close_window(&mut self, id: u32) {

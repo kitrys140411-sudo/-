@@ -1,0 +1,340 @@
+//! Behaviour tests of the larger widgets (file chooser, rows, graphs) and of
+//! input routing, driven through the in-process [`Harness`].
+
+use std::path::PathBuf;
+
+use crate::geom::Vec2;
+use crate::harness::Harness;
+use crate::input::{Button, Key, Mods, Shortcut};
+use crate::layout::{Size, Sizing};
+use crate::{App, ChooserResult, FileChooser, Icon, LineGraph, Sense, Ui};
+
+fn harness(w: f32, h: f32) -> Option<Harness> {
+    let h = Harness::new(w, h).ok()?;
+    if !h.has_font("Inter") {
+        eprintln!("Inter not installed; skipping");
+        return None;
+    }
+    Some(h)
+}
+
+/// An app from a closure.
+struct F<S, V: FnMut(&mut S, &mut Ui)>(S, V);
+
+impl<S, V: FnMut(&mut S, &mut Ui)> App for F<S, V> {
+    fn view(&mut self, ui: &mut Ui) {
+        (self.1)(&mut self.0, ui)
+    }
+}
+
+/// A scratch directory: `sub/inner.txt`, `notes.txt`, `photo.png`,
+/// `.hidden`.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lumen-ui-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/inner.txt"), "x").unwrap();
+    std::fs::write(dir.join("notes.txt"), "hello").unwrap();
+    std::fs::write(dir.join("photo.png"), [0u8; 2048]).unwrap();
+    std::fs::write(dir.join(".hidden"), "").unwrap();
+    dir
+}
+
+struct Chooser {
+    fc: Option<FileChooser>,
+    result: Option<ChooserResult>,
+}
+
+fn chooser_app(fc: FileChooser) -> F<Chooser, impl FnMut(&mut Chooser, &mut Ui)> {
+    F(Chooser { fc: Some(fc), result: None }, |s: &mut Chooser, ui: &mut Ui| {
+        ui.label("Behind the chooser");
+        if let Some(fc) = &mut s.fc {
+            if let Some(r) = fc.show(ui) {
+                s.result = Some(r);
+                s.fc = None;
+            }
+        }
+    })
+}
+
+fn labels(h: &Harness) -> Vec<String> {
+    h.widgets().into_iter().map(|w| w.label).collect()
+}
+
+#[test]
+fn chooser_filters_navigates_and_opens() {
+    let Some(mut h) = harness(900.0, 640.0) else { return };
+    let dir = scratch("open");
+    let fc = FileChooser::open("Open Picture").directory(&dir).filter("Images", &["*.png"]).filter("All Files", &[]);
+    let mut app = chooser_app(fc);
+    h.settle(&mut app);
+    let l = labels(&h);
+    assert!(l.contains(&"photo.png".to_string()) && l.contains(&"sub".to_string()), "{l:?}");
+    assert!(!l.contains(&"notes.txt".to_string()), "filtered out by the Images filter");
+    assert!(!l.contains(&".hidden".to_string()), "hidden files are hidden");
+    assert!(h.widgets().iter().any(|w| w.kind == "list" && w.focused), "the list has the keyboard");
+    // The other filter shows everything; Ctrl+H shows dot files.
+    h.click("file type");
+    h.settle(&mut app);
+    h.click("All Files");
+    h.key(Key::Char('h'), Mods::CTRL);
+    h.settle(&mut app);
+    let l = labels(&h);
+    assert!(l.contains(&"notes.txt".to_string()) && l.contains(&".hidden".to_string()), "{l:?}");
+    // Into a folder and back up with the keyboard: the folder stays selected.
+    h.double_click("sub");
+    h.settle(&mut app);
+    assert!(labels(&h).contains(&"inner.txt".to_string()));
+    assert!(h.log().iter().any(|l| l.ends_with("/sub") && l.starts_with("chooser folder")));
+    h.key(Key::Backspace, Mods::NONE);
+    h.settle(&mut app);
+    let list = h.widgets().into_iter().find(|w| w.kind == "list").unwrap();
+    let sub_index = ["sub", ".hidden", "notes.txt", "photo.png"].iter().position(|&n| n == "sub").unwrap();
+    assert_eq!(list.value.as_deref(), Some(sub_index.to_string().as_str()), "going up selects where we came from");
+    // Type-ahead and Enter open the file.
+    h.type_text("ph");
+    h.frame(&mut app);
+    h.key(Key::Enter, Mods::NONE);
+    h.settle(&mut app);
+    assert_eq!(app.0.result, Some(ChooserResult::Chosen(vec![dir.join("photo.png")])));
+    assert!(h.widget("Open Picture").is_none(), "closed");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn chooser_saves_with_confirmation_and_creates_folders() {
+    let Some(mut h) = harness(900.0, 640.0) else { return };
+    let dir = scratch("save");
+    let mut app = chooser_app(FileChooser::save("Save Notes", "Untitled.txt").directory(&dir));
+    h.settle(&mut app);
+    let name = h.widget("file name").unwrap();
+    assert!(name.focused && name.value.as_deref() == Some("Untitled.txt"));
+    // The stem is selected: typing replaces it and keeps the extension.
+    h.type_text("notes");
+    h.key(Key::Enter, Mods::NONE);
+    h.settle(&mut app);
+    assert!(h.widget("Replace “notes.txt”?").is_some(), "existing file: asks first");
+    assert_eq!(app.0.result, None);
+    h.click("Cancel");
+    h.settle(&mut app);
+    assert!(h.widget("Replace “notes.txt”?").is_none() && app.0.result.is_none());
+    // A new folder, then save into it.
+    h.click("folder-new");
+    h.settle(&mut app);
+    h.type_text("Projects");
+    h.key(Key::Enter, Mods::NONE);
+    h.settle(&mut app);
+    assert!(dir.join("Projects").is_dir());
+    assert!(labels(&h).contains(&"Projects".to_string()));
+    h.double_click("Projects");
+    h.settle(&mut app);
+    h.click("Save");
+    h.settle(&mut app);
+    assert_eq!(app.0.result, Some(ChooserResult::Chosen(vec![dir.join("Projects/notes.txt")])));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn chooser_replace_and_cancel() {
+    let Some(mut h) = harness(900.0, 640.0) else { return };
+    let dir = scratch("replace");
+    let mut app = chooser_app(FileChooser::save("Save", "notes.txt").directory(&dir));
+    h.settle(&mut app);
+    h.click("Save");
+    h.settle(&mut app);
+    h.click("Replace");
+    h.settle(&mut app);
+    assert_eq!(app.0.result, Some(ChooserResult::Chosen(vec![dir.join("notes.txt")])));
+    // Escape cancels a chooser.
+    let mut app = chooser_app(FileChooser::folder("Pick").directory(&dir));
+    h.settle(&mut app);
+    assert!(!labels(&h).contains(&"notes.txt".to_string()), "folder mode lists folders only");
+    h.key(Key::Escape, Mods::NONE);
+    h.settle(&mut app);
+    assert_eq!(app.0.result, Some(ChooserResult::Cancelled));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn chooser_search_and_location() {
+    let Some(mut h) = harness(900.0, 640.0) else { return };
+    let dir = scratch("search");
+    let mut app = chooser_app(FileChooser::open_many("Open").directory(&dir));
+    h.settle(&mut app);
+    h.click("search files");
+    h.type_text("note");
+    h.settle(&mut app);
+    let l = labels(&h);
+    assert!(l.contains(&"notes.txt".to_string()) && !l.contains(&"photo.png".to_string()), "{l:?}");
+    // Ctrl+L: type a path.
+    h.key(Key::Char('l'), Mods::CTRL);
+    h.settle(&mut app);
+    assert!(h.widget("location").unwrap().focused);
+    h.type_text("sub");
+    h.key(Key::Enter, Mods::NONE);
+    h.settle(&mut app);
+    assert!(labels(&h).contains(&"inner.txt".to_string()));
+    // Several files at once.
+    h.click("folder-new");
+    h.settle(&mut app);
+    h.key(Key::Escape, Mods::NONE);
+    h.settle(&mut app);
+    assert!(h.widget("New Folder").is_none() && h.widget("Open").is_some(), "Escape closes only the inner dialog");
+    std::fs::write(dir.join("second.txt"), "2").unwrap();
+    h.key(Key::Left, Mods::ALT);
+    h.settle(&mut app);
+    h.key(Key::F(5), Mods::NONE);
+    h.settle(&mut app);
+    h.click("notes.txt");
+    h.frame(&mut app);
+    let second = h.widget("second.txt").unwrap().rect.center();
+    h.move_to(second);
+    h.ui().input.mods = Mods::CTRL;
+    h.click_at(second, Button::Left);
+    h.frame(&mut app);
+    h.ui().input.mods = Mods::NONE;
+    h.click("Open");
+    h.settle(&mut app);
+    assert_eq!(app.0.result, Some(ChooserResult::Chosen(vec![dir.join("notes.txt"), dir.join("second.txt")])));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn rows_switches_and_graphs() {
+    let Some(mut h) = harness(640.0, 480.0) else { return };
+    #[derive(Default)]
+    struct S {
+        wifi: bool,
+        opened: u32,
+        samples: Vec<f32>,
+    }
+    let mut app = F(S { samples: vec![10.0, 40.0, 25.0, 80.0], ..Default::default() }, |s: &mut S, ui: &mut Ui| {
+        ui.group("Network", |ui| {
+            ui.switch_row("Wi-Fi", Some("Connected"), &mut s.wifi);
+            if crate::ListRow::new("Advanced").icon(Icon::Settings).activatable().show(ui, |_| {}).clicked {
+                s.opened += 1;
+            }
+        });
+        LineGraph::new("cpu").series(&s.samples).range(0.0, 100.0).height(Size::Px(80.0)).show(ui);
+    });
+    h.settle(&mut app);
+    // A click on the row's title flips its switch.
+    let title = h.widgets().into_iter().find(|w| w.kind == "row" && w.label == "Wi-Fi").unwrap();
+    h.click_at(Vec2::new(title.rect.x + 40.0, title.rect.center().y), Button::Left);
+    h.frame(&mut app);
+    assert!(app.0.wifi);
+    h.click("Wi-Fi");
+    h.frame(&mut app);
+    assert!(!app.0.wifi, "and the switch itself");
+    h.click("Advanced");
+    h.frame(&mut app);
+    assert_eq!(app.0.opened, 1);
+    assert_eq!(h.widget("cpu").unwrap().value.as_deref(), Some("80"));
+    assert!(h.widget("Network").is_some(), "group heading");
+    assert!(h.log().contains(&"toggle Wi-Fi on".to_string()));
+}
+
+#[test]
+fn shortcuts_leave_editing_keys_to_a_focused_input() {
+    let Some(mut h) = harness(640.0, 480.0) else { return };
+    #[derive(Default)]
+    struct S {
+        text: String,
+        select_all: u32,
+        saved: u32,
+    }
+    let mut app = F(S::default(), |s: &mut S, ui: &mut Ui| {
+        // Checked before the input is built.
+        if ui.shortcut(Shortcut::ctrl('a')) {
+            s.select_all += 1;
+        }
+        if ui.shortcut(Shortcut::ctrl('s')) {
+            s.saved += 1;
+        }
+        ui.text_input("name", &mut s.text);
+    });
+    h.frame(&mut app);
+    h.key(Key::Char('a'), Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(app.0.select_all, 1, "no input focused: the app gets Ctrl+A");
+    h.click("name");
+    h.frame(&mut app);
+    h.type_text("abc");
+    h.key(Key::Char('a'), Mods::CTRL);
+    h.key(Key::Char('s'), Mods::CTRL);
+    h.type_text("X");
+    h.frame(&mut app);
+    assert_eq!((app.0.select_all, app.0.saved, app.0.text.as_str()), (1, 1, "X"), "Ctrl+A selected the text, Ctrl+S saved");
+}
+
+#[test]
+fn canvas_scroll_and_drag() {
+    let Some(mut h) = harness(640.0, 480.0) else { return };
+    #[derive(Default)]
+    struct S {
+        zoom: f32,
+        pan: Vec2,
+    }
+    let mut app = F(S { zoom: 1.0, ..Default::default() }, |s: &mut S, ui: &mut Ui| {
+        let r = crate::Canvas::new(Size::FILL, Size::FILL).sense("view", Sense { scroll: true, ..Sense::DRAG }).show(ui, |_, _| {});
+        let d = ui.scroll_delta(r.id);
+        s.zoom *= (1.0 - d.y / 500.0).clamp(0.5, 2.0);
+        s.pan = s.pan + r.drag_delta;
+    });
+    h.frame(&mut app);
+    h.frame(&mut app);
+    let center = Vec2::new(320.0, 300.0);
+    h.scroll_at(center, -100.0);
+    h.frame(&mut app);
+    assert!((app.0.zoom - 1.2).abs() < 1e-4, "{}", app.0.zoom);
+    h.drag(center, center + Vec2::new(30.0, -10.0));
+    h.frame(&mut app);
+    assert_eq!(app.0.pan, Vec2::new(30.0, -10.0));
+}
+
+#[test]
+#[should_panic(expected = "is covered by the menu")]
+fn clicking_under_an_open_menu_is_a_test_error() {
+    let Some(mut h) = harness(640.0, 480.0) else { panic!("is covered by the menu (no fonts)") };
+    let mut app = F((), |_: &mut (), ui: &mut Ui| {
+        ui.menu_button(Icon::Menu, "m", |m| {
+            m.item("One");
+            m.item("Two");
+        });
+        ui.button("Below");
+    });
+    h.frame(&mut app);
+    h.click("menu");
+    h.settle(&mut app);
+    h.click("Below");
+}
+
+#[test]
+fn background_tasks_reach_the_view() {
+    let Some(mut h) = harness(640.0, 480.0) else { return };
+    #[derive(Default)]
+    struct S {
+        task: Option<crate::Task<u64>>,
+        result: Option<u64>,
+    }
+    let mut app = F(S::default(), |s: &mut S, ui: &mut Ui| {
+        if s.task.is_none() && s.result.is_none() {
+            s.task = Some(ui.spawn(|| (1..=10u64).product()));
+        }
+        if let Some(v) = s.task.as_mut().and_then(|t| t.take()) {
+            s.result = Some(v);
+            s.task = None;
+        }
+        match s.result {
+            Some(v) => ui.label(format!("Result {v}")),
+            None => ui.spinner(),
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.0.result.is_none() && std::time::Instant::now() < deadline {
+        h.frame(&mut app);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    h.frame(&mut app);
+    assert!(h.widget("Result 3628800").is_some());
+}

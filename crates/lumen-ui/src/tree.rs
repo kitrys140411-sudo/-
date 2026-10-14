@@ -272,7 +272,11 @@ impl Tree {
                 }
             }
         };
-        if l.scroll_x {
+        // A box that scrolls or clips can be narrower than its content (like
+        // CSS overflow): its content never forces its parent wider. (A list
+        // that sized its columns from a too-wide first guess would
+        // otherwise keep the window's content wider than the window.)
+        if l.scroll_x || l.scroll_y || n.clip {
             min = pad;
         }
         if let Size::Px(v) = l.width {
@@ -695,6 +699,21 @@ mod tests {
         assert_eq!(rect(&t, items[0]).y, -30.0);
         assert_eq!(rect(&t, items[9]).y, 9.0 * 40.0 - 30.0);
         assert_eq!(t.nodes[r as usize].content, Vec2::new(50.0, 400.0));
+    }
+
+    #[test]
+    fn scrolling_boxes_do_not_widen_their_parents() {
+        let mut f = fonts();
+        let mut t = Tree::default();
+        let r = root(&mut t, Layout::row());
+        let mut s = Node::new(Layout::column().width(Size::FILL));
+        s.layout.scroll_y = true;
+        let s = t.add(r, s);
+        fixed(&mut t, s, 900.0, 20.0, Layout::default().width(Size::Px(900.0)));
+        let side = fixed(&mut t, r, 100.0, 20.0, Layout::default());
+        t.layout(Vec2::new(400.0, 100.0), &mut f, 1.0);
+        assert_eq!(rect(&t, s).w, 300.0, "the scroll box takes what is left, its content is clipped");
+        assert_eq!(rect(&t, side).x, 300.0);
     }
 
     #[test]

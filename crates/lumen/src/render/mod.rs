@@ -109,6 +109,8 @@ pub struct SceneCtx<'a> {
     /// controls) lives there, other outputs show windows only.
     pub primary: Option<String>,
     pub pointer: Point<f64, Logical>,
+    /// The pointer is locked by a game: no cursor.
+    pub cursor_hidden: bool,
     pub rs: &'a mut RenderState,
     pub now: std::time::Duration,
 }
@@ -583,7 +585,7 @@ fn override_elements(
 }
 
 fn cursor_elements(r: &mut GlesRenderer, ctx: &mut SceneCtx, out_rect: Rectangle<f64, Logical>, scale: f64, elements: &mut Vec<LumenElement>) {
-    if !out_rect.contains(ctx.pointer) {
+    if !out_rect.contains(ctx.pointer) || ctx.cursor_hidden {
         return;
     }
     let local = ctx.pointer - out_rect.loc;
@@ -625,6 +627,53 @@ fn cursor_elements(r: &mut GlesRenderer, ctx: &mut SceneCtx, out_rect: Rectangle
             render_elements_from_surface_tree(r, icon, at_px, scale, 0.9, Kind::Unspecified);
         elements.extend(elems.into_iter().map(LumenElement::Surface));
     }
+}
+
+/// Could KMS show this frame without composition? DrmCompositor puts a
+/// client buffer on the primary plane when the topmost element (cursors go
+/// to the cursor plane) is that buffer, untransformed, fully opaque and
+/// covering the whole output. Our own elements (rounded clipping, animation
+/// transforms, shell UI) must not get in the way of fullscreen games: this
+/// reports what the topmost element is and why it could or could not be
+/// scanned out, for tests and debugging.
+pub fn scanout_check(r: &mut GlesRenderer, elements: &[LumenElement], size: Size<i32, Physical>, scale: f64) -> String {
+    let full = Rectangle::<i32, Physical>::from_size(size);
+    let Some(top) = elements.iter().find(|e| e.kind() != Kind::Cursor) else {
+        return "{\"candidate\":false,\"reason\":\"no elements\"}".into();
+    };
+    let kind = match top {
+        LumenElement::Window(_) => "window",
+        LumenElement::Surface(_) => "surface",
+        LumenElement::Pixel(_) => "pixel",
+        LumenElement::Shape(_) => "shape",
+        LumenElement::Image(_) => "image",
+        LumenElement::Memory(_) => "memory",
+        _ => "other",
+    };
+    let s = Scale::from(scale);
+    let covers = top.geometry(s) == full;
+    let opaque = top.opaque_regions(s).iter().any(|r| r.contains_rect(full));
+    let alpha = top.alpha() >= 1.0;
+    let storage = top.underlying_storage(r).is_some();
+    let client = matches!(top, LumenElement::Window(_) | LumenElement::Surface(_));
+    let reason = if !client {
+        "compositor element on top"
+    } else if !covers {
+        "does not cover the output"
+    } else if !opaque {
+        "not opaque"
+    } else if !alpha {
+        "translucent"
+    } else if !storage {
+        "no client buffer (clipped, transformed or aliased)"
+    } else {
+        "ok"
+    };
+    format!(
+        "{{\"candidate\":{},\"top\":\"{kind}\",\"covers\":{covers},\"opaque\":{opaque},\"alpha\":{alpha},\"storage\":{storage},\"elements\":{},\"reason\":\"{reason}\"}}",
+        reason == "ok",
+        elements.len()
+    )
 }
 
 /// Render a window's last frame into a texture of its geometry size.

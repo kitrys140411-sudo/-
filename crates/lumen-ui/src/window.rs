@@ -131,7 +131,13 @@ struct Runtime {
     /// The pointer pressed on the resize border (events not passed on).
     resizing: bool,
     ready_logged: bool,
+    /// Frames, total and worst CPU time (ms) since the last perf line, and
+    /// the texture uploads (glyphs and images) when it was printed.
     perf: (u32, f32, f32),
+    perf_uploads: u64,
+    /// Frames presented, and frames rendered (view run) — for tests.
+    presented: u64,
+    renders: u64,
 }
 
 /// Open the window and run `app` until it closes.
@@ -223,6 +229,9 @@ pub fn run(options: Options, app: impl App + 'static) -> Result<(), String> {
         resizing: false,
         ready_logged: false,
         perf: (0, 0.0, 0.0),
+        perf_uploads: 0,
+        presented: 0,
+        renders: 0,
     };
     // Seat capabilities (keyboard, data devices) before mapping.
     queue.roundtrip(&mut rt).map_err(|e| format!("roundtrip: {e}"))?;
@@ -338,6 +347,7 @@ impl Runtime {
         }
         let t0 = Instant::now();
         let now = t0;
+        self.renders += 1;
         let (bw, bh) = self.buffer_size();
         if let Some(e) = &self.egl_win {
             if e.get_size() != (bw, bh) {
@@ -361,7 +371,8 @@ impl Runtime {
             let generation = renderer.atlas.generation;
             self.list.clear();
             {
-                let mut p = Painter::new(&mut self.list, renderer, &mut self.images, &self.lib, self.ui.window.scale);
+                let backdrop = self.ui.theme.window_bg;
+                let mut p = Painter::new(&mut self.list, renderer, &mut self.images, &self.lib, self.ui.window.scale, backdrop);
                 self.ui.paint(&mut p);
             }
             if self.renderer.as_ref().unwrap().atlas.generation == generation || attempt == 1 {
@@ -403,14 +414,26 @@ impl Runtime {
             eprintln!("lumen-ui: eglSwapBuffers failed");
         }
         std::mem::swap(&mut self.list, &mut self.prev_list);
+        self.presented += 1;
         self.frame_pending = true;
         self.needs_render = animating;
         self.perf.0 += 1;
         self.perf.1 += cpu;
         self.perf.2 = self.perf.2.max(cpu);
-        if self.perf.0 >= 120 && self.ui.test.enabled() {
-            self.ui.log(&format!("perf frames={} avg_ms={:.2} max_ms={:.2}", self.perf.0, self.perf.1 / self.perf.0 as f32, self.perf.2));
+        // Test builds report frame times every 120 frames and at the end of
+        // each burst of animation, with the textures uploaded meanwhile.
+        if self.ui.test.enabled() && (self.perf.0 >= 120 || (!animating && self.perf.0 >= 10)) {
+            let r = self.renderer.as_ref().unwrap();
+            let uploads = r.atlas.uploads + r.texture_uploads;
+            self.ui.log(&format!(
+                "perf frames={} avg_ms={:.2} max_ms={:.2} uploads={}",
+                self.perf.0,
+                self.perf.1 / self.perf.0 as f32,
+                self.perf.2,
+                uploads - self.perf_uploads
+            ));
             self.perf = (0, 0.0, 0.0);
+            self.perf_uploads = uploads;
         }
         if !self.ready_logged {
             self.ready_logged = true;
@@ -427,7 +450,7 @@ impl Runtime {
         let hovered = self.ui.input.hovered;
         let size = (self.size.0 as f32, self.size.1 as f32);
         let scale = self.scale();
-        self.ui.test.write_map(&self.ui.tree, size, scale, focus, hovered);
+        self.ui.test.write_map(&self.ui.tree, size, scale, focus, hovered, (self.presented, self.renders));
         self.update_cursor();
     }
 

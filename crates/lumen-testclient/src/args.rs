@@ -72,6 +72,20 @@ pub struct Options {
     pub close_on_key: bool,
     /// Paint colorful diagonal stripes over the body (for blur screenshots).
     pub stripes: bool,
+    /// Be an X11 client (through Xwayland) instead of a Wayland one.
+    pub x11: bool,
+    /// X11: open a transient dialog once the main window is mapped.
+    pub dialog: bool,
+    /// Lock the pointer (zwp_locked_pointer_v1) on the main surface.
+    pub lock_pointer: bool,
+    /// Confine the pointer (zwp_confined_pointer_v1) to the main surface.
+    pub confine_pointer: bool,
+    /// Print zwp_relative_pointer_v1 motion.
+    pub relative: bool,
+    /// Keep the screen on (zwp_idle_inhibitor_v1 on the main surface).
+    pub idle_inhibit: bool,
+    /// Ask for every key (zwp_keyboard_shortcuts_inhibitor_v1).
+    pub inhibit_shortcuts: bool,
 }
 
 impl Default for Options {
@@ -91,6 +105,13 @@ impl Default for Options {
             exit_after_ms: None,
             close_on_key: false,
             stripes: false,
+            x11: false,
+            dialog: false,
+            lock_pointer: false,
+            confine_pointer: false,
+            relative: false,
+            idle_inhibit: false,
+            inhibit_shortcuts: false,
         }
     }
 }
@@ -121,6 +142,16 @@ usage: lumen-testclient [OPTIONS]
   --exit-after-ms N      exit cleanly after N milliseconds
   --close-on-key         exit when Escape is pressed
   --stripes              paint colorful diagonal stripes over the body
+  --lock-pointer         lock the pointer on the window (zwp_pointer_constraints_v1)
+  --confine-pointer      confine the pointer to the window
+  --relative             print relative pointer motion (zwp_relative_pointer_v1)
+  --idle-inhibit         keep the screen on while visible (zwp_idle_inhibit_manager_v1)
+  --inhibit-shortcuts    receive every key (zwp_keyboard_shortcuts_inhibit_manager_v1)
+  --x11                  be an X11 client on $DISPLAY (Xwayland) instead; uses --title,
+                         --app-id (WM_CLASS), --size, --color, --maximize, --fullscreen,
+                         --popup (an override-redirect menu at the click), --exit-after-ms,
+                         --close-on-key
+  --dialog               with --x11: open a transient dialog once the window is mapped
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -206,8 +237,27 @@ where
                 takes_no_value(&flag)?;
                 opts.stripes = true;
             }
+            "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
+            | "--inhibit-shortcuts" => {
+                takes_no_value(&flag)?;
+                match flag.as_str() {
+                    "--x11" => opts.x11 = true,
+                    "--dialog" => opts.dialog = true,
+                    "--lock-pointer" => opts.lock_pointer = true,
+                    "--confine-pointer" => opts.confine_pointer = true,
+                    "--relative" => opts.relative = true,
+                    "--idle-inhibit" => opts.idle_inhibit = true,
+                    _ => opts.inhibit_shortcuts = true,
+                }
+            }
             _ => return Err(format!("unknown argument {arg:?}")),
         }
+    }
+    if opts.lock_pointer && opts.confine_pointer {
+        return Err("--lock-pointer and --confine-pointer are mutually exclusive".into());
+    }
+    if opts.dialog && !opts.x11 {
+        return Err("--dialog needs --x11".into());
     }
     Ok(Command::Run(opts))
 }
@@ -312,6 +362,18 @@ mod tests {
         assert!(run(&["--maximize", "--fullscreen"]).is_err());
         assert!(run(&["--bogus"]).is_err());
         assert!(run(&["positional"]).is_err());
+    }
+
+    #[test]
+    fn gaming_and_x11_flags() {
+        let o = run(&["--lock-pointer", "--relative", "--idle-inhibit", "--inhibit-shortcuts"]).unwrap();
+        assert!(o.lock_pointer && o.relative && o.idle_inhibit && o.inhibit_shortcuts);
+        assert!(!o.x11 && !o.confine_pointer);
+        let o = run(&["--x11", "--dialog", "--popup"]).unwrap();
+        assert!(o.x11 && o.dialog && o.popup);
+        assert!(run(&["--lock-pointer", "--confine-pointer"]).is_err());
+        assert!(run(&["--dialog"]).is_err());
+        assert!(run(&["--x11=1"]).is_err());
     }
 
     #[test]
