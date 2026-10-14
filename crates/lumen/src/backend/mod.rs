@@ -56,6 +56,21 @@ impl Backend {
         }
     }
 
+    /// Apply pointer settings to the real input devices (udev only);
+    /// returns how many were configured.
+    pub fn configure_input_devices(&mut self, cfg: &crate::inputcfg::InputConfig) -> usize {
+        match self {
+            Backend::Udev(d) => d.configure_input_devices(cfg),
+            _ => 0,
+        }
+    }
+
+    pub fn update_leds(&mut self, leds: smithay::input::keyboard::LedState) {
+        if let Backend::Udev(d) = self {
+            d.update_leds(leds);
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Backend::Udev(_) => "udev",
@@ -179,6 +194,8 @@ impl Lumen {
         if let Some(icon) = &self.dnd_icon {
             send_frames(icon, output, time);
         }
+        // Icons the frame wanted from the icon theme load in the background.
+        self.load_requested_icons();
     }
 
     /// Presentation feedback for everything visible on `output`.

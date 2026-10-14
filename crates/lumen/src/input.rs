@@ -3,17 +3,26 @@
 //! Configurable shortcuts come from the binding table ([`crate::keybind`]);
 //! only console switching (Ctrl+Alt+F1..F12), the Super tap and Super+drag
 //! are built in.
+//!
+//! A key release reaches the client exactly when its press did, so clients
+//! never see a key stuck down: actions that fire on a release (the Super
+//! tap, modifier-only chords like Alt+Shift) run after the release has been
+//! forwarded.
+
+use std::time::Duration;
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, Switch, SwitchState, SwitchToggleEvent,
 };
-use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
+use smithay::input::keyboard::{keysyms, FilterResult, KeyboardHandle, Keycode, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 
-use crate::keybind::Mods;
+use crate::backlight::BrightnessCmd;
+use crate::keybind::{is_modifier_key, KeySyms, Mods};
 use crate::state::Lumen;
 use crate::volume::VolumeCmd;
 use crate::wm::{Grab, GrabKind, Layout, Tile, WORKSPACES};
@@ -43,6 +52,9 @@ pub enum Action {
     VtSwitch(i32),
     Screenshot,
     Volume(VolumeCmd),
+    Brightness(BrightnessCmd),
+    SwitchLayout { backward: bool },
+    Suspend,
     ToggleHud,
     /// A key for the shell UI (overview search, switcher, menus).
     ShellKey { sym: Keysym, utf8: Option<String>, mods: ModifiersState },
@@ -54,9 +66,37 @@ impl Action {
     fn keeps_sheet(&self) -> bool {
         matches!(
             self,
-            Action::None | Action::ShellKey { .. } | Action::ToggleShortcuts | Action::Volume(_) | Action::Screenshot | Action::ToggleHud
+            Action::None
+                | Action::ShellKey { .. }
+                | Action::ToggleShortcuts
+                | Action::Volume(_)
+                | Action::Brightness(_)
+                | Action::SwitchLayout { .. }
+                | Action::Screenshot
+                | Action::ToggleHud
         )
     }
+
+    /// Actions that repeat while their key is held (the compositor repeats
+    /// them: key repeat is otherwise the client's business).
+    fn repeats(&self) -> bool {
+        matches!(self, Action::Volume(VolumeCmd::Up | VolumeCmd::Down) | Action::Brightness(_))
+    }
+}
+
+/// The symbols of `keycode` in every layout of the keymap: unshifted and with Shift.
+fn layout_syms(keyboard: &KeyboardHandle<Lumen>, lumen: &mut Lumen, keycode: Keycode) -> Vec<(Keysym, Keysym)> {
+    keyboard.with_xkb_state(lumen, |ctx| {
+        let xkb = ctx.xkb().lock().unwrap();
+        // SAFETY: the keymap reference does not outlive the lock (no ref-count is kept).
+        let keymap = unsafe { xkb.keymap() };
+        xkb.layouts()
+            .map(|l| {
+                let sym = |level| keymap.key_get_syms_by_level(keycode, l.0, level).first().copied().unwrap_or(Keysym::NoSymbol);
+                (sym(0), sym(1))
+            })
+            .collect()
+    })
 }
 
 /// Built-in shortcuts that are not in the binding table: console switching
@@ -89,6 +129,11 @@ impl Lumen {
             }
             InputEvent::PointerButton { event } => self.handle_button(event.button_code(), event.state(), event.time_msec()),
             InputEvent::PointerAxis { event } => self.on_axis::<B>(event),
+            InputEvent::SwitchToggle { event } => {
+                if event.switch() == Some(Switch::Lid) {
+                    self.on_lid(event.state() == SwitchState::On);
+                }
+            }
             _ => {}
         }
     }
@@ -99,38 +144,52 @@ impl Lumen {
     }
 
     /// Process a key from any source (input backend or the IPC socket).
-    pub fn handle_key(&mut self, keycode: smithay::input::keyboard::Keycode, state: KeyState, time: u32) {
+    pub fn handle_key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
         let Some(keyboard) = self.seat.get_keyboard() else { return };
+        // A held shortcut repeats until its key is released or another is pressed.
+        if state == KeyState::Pressed || self.key_repeat.as_ref().is_some_and(|(k, _)| *k == keycode) {
+            self.stop_key_repeat();
+        }
+        let layouts = layout_syms(&keyboard, self, keycode);
         let shell_grabs = self.shell.wants_keyboard();
         let action = keyboard.input::<Action, _>(self, keycode, state, serial, time, |lumen, mods, handle| {
             let sym = handle.modified_sym();
             let raw_sym = handle.raw_syms().first().copied().unwrap_or(sym);
+            let m = Mods::from(mods);
+            let modifier = is_modifier_key(raw_sym) || is_modifier_key(sym);
             if state == KeyState::Pressed {
                 lumen.shell.super_tap = is_super(raw_sym);
-                let bound = fixed_shortcut(mods, sym).or_else(|| {
-                    let latin = handle.raw_latin_sym_or_raw_current_sym().unwrap_or(raw_sym);
-                    lumen.keys.lookup(Mods::from(mods), latin, raw_sym, sym).map(|b| b.action.clone())
-                });
+                // Alt+Shift-style chords arm when a modifier press completes
+                // them; any other key disarms them.
+                lumen.mod_chord = if modifier { lumen.keys.lookup_modifiers(m).map(|_| m) } else { None };
+                let syms = KeySyms { layouts, raw: raw_sym, modified: sym };
+                let bound = fixed_shortcut(mods, sym).or_else(|| lumen.keys.lookup(m, &syms).map(|b| b.action.clone()));
                 if let Some(a) = bound {
-                    lumen.suppressed_keys.push(raw_sym);
+                    lumen.suppressed_keys.push(keycode);
                     return FilterResult::Intercept(a);
                 }
                 if shell_grabs {
-                    lumen.suppressed_keys.push(raw_sym);
-                    return FilterResult::Intercept(Action::ShellKey { sym, utf8: handle.modified_sym().key_char().map(String::from), mods: *mods });
+                    lumen.suppressed_keys.push(keycode);
+                    return FilterResult::Intercept(Action::ShellKey { sym, utf8: sym.key_char().map(String::from), mods: *mods });
                 }
                 FilterResult::Forward
             } else {
-                // Releasing Super after tapping it alone toggles the overview.
+                // Releasing Super after tapping it alone toggles the overview;
+                // releasing an armed modifier chord runs its action.
                 if is_super(raw_sym) && std::mem::take(&mut lumen.shell.super_tap) {
-                    return FilterResult::Intercept(Action::ToggleOverview);
+                    lumen.release_action = Some(Action::ToggleOverview);
+                } else if modifier {
+                    if let Some(chord) = lumen.mod_chord.take() {
+                        lumen.release_action = lumen.keys.lookup_modifiers(chord).map(|b| b.action.clone());
+                    }
                 }
                 // Releasing Alt ends the window switcher.
                 if matches!(raw_sym.raw(), keysyms::KEY_Alt_L | keysyms::KEY_Alt_R) && lumen.shell.switcher_active() {
                     lumen.shell_switcher_commit();
                 }
-                if let Some(i) = lumen.suppressed_keys.iter().position(|k| *k == raw_sym) {
+                // Only releases of keys whose press was consumed are consumed.
+                if let Some(i) = lumen.suppressed_keys.iter().position(|k| *k == keycode) {
                     lumen.suppressed_keys.remove(i);
                     return FilterResult::Intercept(Action::None);
                 }
@@ -138,7 +197,45 @@ impl Lumen {
             }
         });
         if let Some(a) = action {
+            if state == KeyState::Pressed && a.repeats() {
+                self.start_key_repeat(keycode, a.clone());
+            }
             self.run_action(a);
+        }
+        if let Some(a) = self.release_action.take() {
+            self.run_action(a);
+        }
+        // xkb options (grp:...) may switch layouts on their own.
+        self.sync_layout();
+    }
+
+    /// Repeat `action` while `keycode` stays down, at the keyboard's repeat
+    /// delay and rate (at most 20 per second: each step runs a command), and
+    /// only as fast as the commands finish.
+    fn start_key_repeat(&mut self, keycode: Keycode, action: Action) {
+        let k = &self.input_cfg.keyboard;
+        if k.repeat_rate <= 0 {
+            return;
+        }
+        let interval = Duration::from_millis((1000 / k.repeat_rate as u64).max(50));
+        let delay = Duration::from_millis(k.repeat_delay.max(0) as u64);
+        let token = self.lh.insert_source(Timer::from_duration(delay), move |_, _, state| {
+            let busy = match &action {
+                Action::Volume(_) => state.volume_jobs.busy(),
+                Action::Brightness(_) => state.brightness_jobs.busy(),
+                _ => false,
+            };
+            if !busy {
+                state.run_action(action.clone());
+            }
+            TimeoutAction::ToDuration(interval)
+        });
+        self.key_repeat = token.ok().map(|t| (keycode, t));
+    }
+
+    pub fn stop_key_repeat(&mut self) {
+        if let Some((_, token)) = self.key_repeat.take() {
+            self.lh.remove(token);
         }
     }
 
@@ -205,7 +302,10 @@ impl Lumen {
             Action::SwitcherNext { reverse } => self.shell_switcher_next(reverse),
             Action::VtSwitch(vt) => self.backend.change_vt(vt),
             Action::Screenshot => self.screenshot_to_file(),
-            Action::Volume(cmd) => self.bg.run(move || crate::background::Done::Volume(crate::volume::run(cmd))),
+            Action::Volume(cmd) => self.run_volume(cmd),
+            Action::Brightness(cmd) => self.run_brightness(cmd),
+            Action::SwitchLayout { backward } => self.switch_layout(backward),
+            Action::Suspend => self.suspend(),
             Action::ToggleHud => self.shell.hud = !self.shell.hud,
             Action::ShellKey { sym, utf8, mods } => self.shell_key(sym, utf8, mods),
         }
@@ -242,6 +342,10 @@ impl Lumen {
             .env("XDG_SESSION_TYPE", "wayland")
             .env("LUMEN_IPC", crate::ipc::socket_path())
             .env_remove("DISPLAY");
+        // The session sets it (lumen.service); a compositor started by hand still names itself.
+        if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
+            c.env("XDG_CURRENT_DESKTOP", "Lumen");
+        }
         c.stdin(std::process::Stdio::null());
         // Children must not inherit the compositor's signal mask/dispositions.
         use std::os::unix::process::CommandExt;
@@ -348,9 +452,10 @@ impl Lumen {
         let Some(pointer) = self.seat.get_pointer() else { return };
         let pressed = state == ButtonState::Pressed;
         // Super+click (move/resize) is not a Super tap: releasing Super must
-        // not open the overview.
+        // not open the overview (nor Alt+Shift+click switch the layout).
         if pressed {
             self.shell.super_tap = false;
+            self.mod_chord = None;
         }
 
         if !pressed {
@@ -391,6 +496,7 @@ impl Lumen {
 
     fn on_axis<B: InputBackend>(&mut self, evt: B::PointerAxisEvent) {
         self.shell.super_tap = false;
+        self.mod_chord = None;
         let h = evt.amount(Axis::Horizontal).unwrap_or_else(|| evt.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0);
         let v = evt.amount(Axis::Vertical).unwrap_or_else(|| evt.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
         if self.shell_scroll(v) {

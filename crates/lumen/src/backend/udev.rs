@@ -18,6 +18,7 @@ use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRender
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType};
 use smithay::backend::egl::context::ContextPriority;
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::ImportDma;
@@ -29,7 +30,7 @@ use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags};
-use smithay::reexports::input::Libinput;
+use smithay::reexports::input::{self as libinput, Libinput};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Transform};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
@@ -94,6 +95,8 @@ pub struct UdevData {
     device: Option<Device>,
     node: DrmNode,
     lh: LoopHandle<'static, Lumen>,
+    /// libinput devices, for applying input settings and keyboard LEDs.
+    input_devices: Vec<libinput::Device>,
 }
 
 impl UdevData {
@@ -116,6 +119,37 @@ impl UdevData {
     pub fn change_vt(&mut self, vt: i32) {
         if let Err(e) = self.session.change_vt(vt) {
             tracing::warn!("cannot switch to VT {vt}: {e}");
+        }
+    }
+
+    /// Apply input settings to every pointer device; returns how many.
+    pub fn configure_input_devices(&mut self, cfg: &crate::inputcfg::InputConfig) -> usize {
+        self.input_devices.iter_mut().filter_map(|d| crate::inputcfg::configure_device(d, cfg)).count()
+    }
+
+    /// Caps Lock and Num Lock lights on every keyboard.
+    pub fn update_leds(&mut self, leds: smithay::input::keyboard::LedState) {
+        let mut l = libinput::Led::empty();
+        for (on, flag) in [(leds.caps, libinput::Led::CAPSLOCK), (leds.num, libinput::Led::NUMLOCK), (leds.scroll, libinput::Led::SCROLLLOCK)] {
+            if on == Some(true) {
+                l |= flag;
+            }
+        }
+        for d in self.input_devices.iter_mut().filter(|d| d.has_capability(libinput::DeviceCapability::Keyboard)) {
+            d.led_update(l);
+        }
+    }
+}
+
+/// A new libinput device: configure it (touchpad, mouse) and remember it.
+fn input_device_added(state: &mut Lumen, mut device: libinput::Device) {
+    let kind = crate::inputcfg::configure_device(&mut device, &state.input_cfg);
+    tracing::info!(name = device.name(), ?kind, "input device added");
+    let leds = state.seat.get_keyboard().map(|k| k.led_state());
+    if let Backend::Udev(d) = &mut state.backend {
+        d.input_devices.push(device);
+        if let Some(leds) = leds {
+            d.update_leds(leds);
         }
     }
 }
@@ -150,7 +184,7 @@ pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backe
         .ok_or("no GPU found")?;
     let node = DrmNode::from_path(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     tracing::info!("using GPU {}", path.display());
-    state.backend = Backend::Udev(UdevData { session, renderer: None, device: None, node, lh: lh.clone() });
+    state.backend = Backend::Udev(UdevData { session, renderer: None, device: None, node, lh: lh.clone(), input_devices: Vec::new() });
     add_device(state, &path, node)?;
 
     // Hotplug of connectors (device changed events).
@@ -172,13 +206,24 @@ pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backe
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(d.session.clone().into());
     libinput.udev_assign_seat(&seat).map_err(|_| "libinput: cannot assign seat")?;
     let input_backend = LibinputInputBackend::new(libinput.clone());
-    lh.insert_source(input_backend, |event, _, state| state.process_input_event(event))
-        .map_err(|e| format!("libinput source: {e}"))?;
+    lh.insert_source(input_backend, |event, _, state| match event {
+        InputEvent::DeviceAdded { device } => input_device_added(state, device),
+        InputEvent::DeviceRemoved { device } => {
+            tracing::info!(name = device.name(), "input device removed");
+            if let Backend::Udev(d) = &mut state.backend {
+                d.input_devices.retain(|x| x != &device);
+            }
+        }
+        event => state.process_input_event(event),
+    })
+    .map_err(|e| format!("libinput source: {e}"))?;
 
     // Session (VT switch) events.
     lh.insert_source(notifier, move |event, _, state| match event {
         SessionEvent::PauseSession => {
             tracing::info!("session paused");
+            // Key releases do not arrive while paused: a held shortcut must not repeat forever.
+            state.stop_key_repeat();
             libinput.suspend();
             if let Backend::Udev(d) = &mut state.backend {
                 if let Some(dev) = d.device.as_mut() {
@@ -387,6 +432,7 @@ fn scan_connectors(state: &mut Lumen) {
             removed.push((s.output, s.global));
         }
     }
+    let any_removed = !removed.is_empty();
     for (output, global) in removed {
         tracing::info!("output {} disconnected", output.name());
         state.outputs.retain(|o| o != &output);
@@ -402,6 +448,10 @@ fn scan_connectors(state: &mut Lumen) {
     }
     state.on_output_resized();
     state.queue_redraw_all();
+    if any_removed {
+        // The external monitor of a closed laptop went away.
+        state.check_lid();
+    }
 }
 
 fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {

@@ -17,6 +17,7 @@ border           = "#ffffff1a"
 text             = "#ececf2"
 text_dim         = "#9a9aaa"
 danger           = "#ff7b72"
+success          = "#8fd694"
 shadow           = "#000000"
 overview_dim     = "#00000040"
 

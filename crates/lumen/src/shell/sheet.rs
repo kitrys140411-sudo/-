@@ -487,6 +487,9 @@ mod tests {
         assert_eq!(row("Go to workspace").action, None);
         assert_eq!(row("Activities overview").chords[0], s(&["Super"]));
         assert_eq!(row("Move window").action, None);
+        assert_eq!(row("Switch keyboard layout").chords, vec![s(&["Super", "Space"]), s(&["Alt", "Shift"])]);
+        assert_eq!(row("Steam").chords, vec![s(&["Super", "G"])]);
+        assert_eq!(row("Brightness up").chords, vec![s(&["Brightness Up"])]);
         // Groups are contiguous, in order of first appearance.
         let groups: Vec<&str> = rows.iter().map(|r| r.group.as_str()).collect();
         let mut seen: Vec<&str> = Vec::new();
@@ -502,7 +505,7 @@ mod tests {
     #[test]
     fn filtering_matches_labels_groups_and_keys() {
         let mut keys = KeyBindings::builtin();
-        keys.apply(parse_file("[[bind]]\nkeys = \"Super+G\"\naction = \"spawn\"\ncommand = \"gimp\"\nlabel = \"GIMP\"\ngroup = \"Apps\"\n").unwrap());
+        keys.apply(parse_file("[[bind]]\nkeys = \"Super+J\"\naction = \"spawn\"\ncommand = \"gimp\"\nlabel = \"GIMP\"\ngroup = \"Apps\"\n").unwrap());
         let rows = rows(&keys);
         let labels = |q: &str| filter(&rows, q).into_iter().map(|i| rows[i].label.clone()).collect::<Vec<_>>();
         assert_eq!(labels("youtube"), vec!["YouTube"]);

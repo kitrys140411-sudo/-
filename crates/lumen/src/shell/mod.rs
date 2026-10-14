@@ -1,7 +1,8 @@
 //! The desktop shell that lives inside the compositor: top panel (workspace
-//! pills, clock, power menu), overview (window grid, search, app grid,
-//! workspace thumbnails), dock, Alt+Tab switcher, notifications, the
-//! keyboard-shortcut cheat sheet, the volume OSD and the frame-time HUD.
+//! pills, clock, keyboard layout, battery, power menu), overview (window
+//! grid, search, app grid, workspace thumbnails), dock, Alt+Tab switcher,
+//! notifications, the keyboard-shortcut cheat sheet, the volume and
+//! brightness OSD and the frame-time HUD.
 //!
 //! State and behavior are here; drawing is in [`render`], geometry in
 //! [`layout`]. Interactive areas are recorded while drawing (`hits`) and used
@@ -31,6 +32,9 @@ use crate::wm::{Wm, WORKSPACES};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hit {
     Activities,
+    /// The keyboard layout indicator (a click switches the layout).
+    Layout,
+    Battery,
     Power,
     PowerItem(usize),
     Popover,
@@ -48,11 +52,11 @@ pub enum Hit {
     SheetRow(usize),
 }
 
-pub const POWER_ITEMS: [&str; 3] = ["Log Out", "Restart", "Power Off"];
+pub const POWER_ITEMS: [&str; 4] = ["Suspend", "Log Out", "Restart", "Power Off"];
 
 /// Dock favorites when `$LUMEN_FAVORITES` is not set; only apps with an
 /// installed desktop entry are shown.
-pub const DEFAULT_FAVORITES: [&str; 6] = ["lumen-term", "firefox", "youtube", "claude-code", "lumen-files", "lumen-settings"];
+pub const DEFAULT_FAVORITES: [&str; 7] = ["lumen-term", "firefox", "youtube", "claude-code", "steam", "lumen-files", "lumen-settings"];
 
 pub struct Switcher {
     /// Window ids in most-recently-used order.
@@ -122,6 +126,12 @@ pub struct Shell {
     next_notification: u64,
     pub sheet: Option<sheet::Sheet>,
     pub osd: Option<osd::Osd>,
+    /// Wakes the loop when the OSD should hide.
+    osd_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Panel label of the active keyboard layout (None with one layout).
+    pub layout_label: Option<String>,
+    /// The laptop battery (None on machines without one).
+    pub battery: Option<crate::power::Battery>,
     popover_params: SpringParams,
     /// Interactive regions of the last frame, topmost first.
     pub hits: Vec<(Rect, Hit)>,
@@ -159,6 +169,9 @@ impl Shell {
             next_notification: 1,
             sheet: None,
             osd: None,
+            osd_timer: None,
+            layout_label: None,
+            battery: None,
             popover_params: theme.spring(a.popover, 0.002),
             hits: Vec::new(),
             pointer: (0.0, 0.0).into(),
@@ -289,7 +302,7 @@ impl Shell {
             .favorites()
             .iter()
             .map(|fav| match self.apps.iter().find(|a| &a.id == fav) {
-                Some(a) => DockItem { id: a.id.clone(), name: a.name.clone(), icon: icon_name(a), exec: Some(a.exec.clone()), windows: vec![] },
+                Some(a) => DockItem { id: a.id.clone(), name: a.name.clone(), icon: icon_name(a), exec: Some(a.command()), windows: vec![] },
                 None => DockItem { id: fav.clone(), name: fav.clone(), icon: fav.clone(), exec: Some(vec![fav.clone()]), windows: vec![] },
             })
             .collect();
@@ -314,7 +327,7 @@ impl Shell {
                 id: key.clone(),
                 name: app.map(|a| a.name.clone()).unwrap_or_else(|| if w.title().is_empty() { key.clone() } else { w.title() }),
                 icon: app.map(icon_name).unwrap_or(fallback_icon),
-                exec: app.map(|a| a.exec.clone()),
+                exec: app.map(|a| a.command()),
                 windows: vec![w.id],
             });
         }
@@ -405,9 +418,12 @@ impl Shell {
 }
 
 /// Icon name for an app: the icon we draw for its Icon= key or its id, else
-/// its id (a letter tile).
+/// its Icon= name (looked up in the icon themes), else its id (a letter tile).
 fn icon_name(a: &App) -> String {
-    crate::icons::canonical(&a.icon).or_else(|| crate::icons::canonical(&a.id)).map(String::from).unwrap_or_else(|| a.id.clone())
+    crate::icons::canonical(&a.icon)
+        .or_else(|| crate::icons::canonical(&a.id))
+        .map(String::from)
+        .unwrap_or_else(|| if a.icon.is_empty() { a.id.clone() } else { a.icon.clone() })
 }
 
 /// Does a window with app id `key` belong to the desktop entry `id`?
@@ -474,14 +490,27 @@ impl Lumen {
         });
     }
 
-    /// Show the volume OSD with a new level.
-    pub fn shell_show_volume(&mut self, level: f64, muted: bool) {
+    /// Show the volume or brightness OSD with a new level.
+    pub fn shell_show_osd(&mut self, kind: osd::OsdKind, level: f64, muted: bool) {
         let now = self.now();
         match &mut self.shell.osd {
-            Some(o) => o.update(level, muted, now),
-            None => self.shell.osd = Some(osd::Osd::new(level, muted, now, self.shell.popover_params)),
+            Some(o) => o.update(kind, level, muted, now),
+            None => self.shell.osd = Some(osd::Osd::new(kind, level, muted, now, self.shell.popover_params)),
         }
-        self.wake_after(osd::SHOW_FOR);
+        // One wake-up for hiding it, moved on with every change (a held key
+        // changes it 20 times a second).
+        if let Some(token) = self.shell.osd_timer.take() {
+            self.lh.remove(token);
+        }
+        let timer = Timer::from_duration(osd::SHOW_FOR + Duration::from_millis(16));
+        self.shell.osd_timer = self
+            .lh
+            .insert_source(timer, |_, _, state| {
+                state.shell.osd_timer = None;
+                state.queue_redraw_all();
+                TimeoutAction::Drop
+            })
+            .ok();
         self.queue_redraw_all();
     }
 
@@ -514,11 +543,12 @@ impl Lumen {
         self.shell.query.clear();
         self.shell.results.clear();
         if open {
-            // Pick up apps installed since the last time.
+            // Pick up apps installed since the last time (and their icons).
             let stamp = apps::dirs_stamp();
             if stamp != self.shell.apps_stamp {
                 self.shell.apps = apps::load();
                 self.shell.apps_stamp = stamp;
+                self.render.icons.forget_themed();
             }
         } else if self.shell.apps_mode {
             self.shell_set_apps_mode(false);
@@ -537,7 +567,7 @@ impl Lumen {
     pub fn shell_launch(&mut self, app: usize) {
         let Some(a) = self.shell.apps.get(app).cloned() else { return };
         tracing::info!(app = %a.id, "launching");
-        self.spawn(&a.exec);
+        self.spawn(&a.command());
         self.shell_set_overview(false);
     }
 
@@ -566,25 +596,22 @@ impl Lumen {
         self.shell_set_overview(false);
     }
 
+    /// A power menu item ([`POWER_ITEMS`]). Suspend, restart and power off
+    /// are requests to lumen-init, sent off the main loop.
     fn shell_power(&mut self, item: usize) {
         self.shell.popover = None;
         match item {
-            0 => {
+            0 => self.suspend(),
+            1 => {
                 tracing::info!("log out");
                 self.signal.stop();
             }
-            1 | 2 => {
-                let request = if item == 1 { "reboot" } else { "poweroff" };
-                let result = std::os::unix::net::UnixStream::connect("/run/lumen/control").and_then(|mut s| {
-                    use std::io::Write;
-                    s.write_all(format!("{request}\n").as_bytes())
-                });
-                if let Err(e) = result {
-                    self.notify("Cannot reach the system", &format!("{request}: {e}"));
-                }
-            }
+            2 => self.init_request("reboot"),
+            3 => self.init_request("poweroff"),
             _ => {}
         }
+        let focused = self.wm.focused;
+        self.focus_window(focused);
         self.queue_redraw_all();
     }
 
@@ -823,6 +850,10 @@ impl Lumen {
                 }
                 Some(Hit::Power) => {
                     self.shell_toggle_popover();
+                    return true;
+                }
+                Some(Hit::Layout) => {
+                    self.switch_layout(false);
                     return true;
                 }
                 Some(Hit::DockItem(i)) => {

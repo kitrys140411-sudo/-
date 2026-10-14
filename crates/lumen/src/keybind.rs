@@ -10,14 +10,21 @@
 //! rejected as a whole, so a typo never leaves the desktop half configured.
 //!
 //! Chords are matched on keysyms, not keycodes: letters case-insensitively
-//! and through the first Latin layout (Super+T works with a Cyrillic layout
-//! active), and a symbol typed with Shift matches a binding written with the
+//! and through every configured layout, first layout first (Super+T and
+//! Super+/ work with a Russian layout active, where those keys type "е" and
+//! "."), and a symbol typed with Shift matches a binding written with the
 //! symbol itself (Super+? is Super+Shift+/ on a US keyboard).
+//!
+//! A chord of modifiers only ("Alt+Shift") fires when the modifiers are
+//! released again without any other key or button in between, so it never
+//! gets in the way of chords that start with the same modifiers
+//! (Alt+Shift+Tab).
 
 use serde::Deserialize;
 use smithay::input::keyboard::{keysyms, xkb, Keysym, ModifiersState};
 use toml::Spanned;
 
+use crate::backlight::BrightnessCmd;
 use crate::input::Action;
 use crate::volume::VolumeCmd;
 use crate::wm::{Tile, WORKSPACES};
@@ -40,7 +47,52 @@ impl From<&ModifiersState> for Mods {
     }
 }
 
-/// A key with modifiers. `key` is normalized to lower case.
+impl Mods {
+    fn count(&self) -> usize {
+        [self.logo, self.ctrl, self.alt, self.shift].iter().filter(|m| **m).count()
+    }
+
+    /// Names in canonical order (Super, Ctrl, Alt, Shift).
+    fn names(&self) -> impl Iterator<Item = &'static str> {
+        [(self.logo, "Super"), (self.ctrl, "Ctrl"), (self.alt, "Alt"), (self.shift, "Shift")].into_iter().filter(|(on, _)| *on).map(|(_, n)| n)
+    }
+}
+
+/// Parse a modifier name into `mods`; false if `name` is not a modifier.
+fn set_modifier(mods: &mut Mods, name: &str) -> bool {
+    match name.to_ascii_lowercase().as_str() {
+        "super" | "logo" | "win" | "mod4" | "meta" => mods.logo = true,
+        "ctrl" | "control" => mods.ctrl = true,
+        "alt" | "mod1" => mods.alt = true,
+        "shift" => mods.shift = true,
+        _ => return false,
+    }
+    true
+}
+
+/// Keysyms of the modifier keys themselves (a modifier-only chord is armed
+/// by pressing these and fires when one is released).
+pub fn is_modifier_key(sym: Keysym) -> bool {
+    matches!(
+        sym.raw(),
+        keysyms::KEY_Shift_L
+            | keysyms::KEY_Shift_R
+            | keysyms::KEY_Control_L
+            | keysyms::KEY_Control_R
+            | keysyms::KEY_Alt_L
+            | keysyms::KEY_Alt_R
+            | keysyms::KEY_Meta_L
+            | keysyms::KEY_Meta_R
+            | keysyms::KEY_Super_L
+            | keysyms::KEY_Super_R
+            | keysyms::KEY_Hyper_L
+            | keysyms::KEY_Hyper_R
+            | keysyms::KEY_ISO_Level3_Shift
+    )
+}
+
+/// A key with modifiers. `key` is normalized to lower case; `NoSymbol` makes
+/// it a modifier-only chord ("Alt+Shift").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub mods: Mods,
@@ -79,6 +131,9 @@ fn alias(name: &str) -> Option<Keysym> {
         "volumedown" => keysyms::KEY_XF86AudioLowerVolume,
         "mute" => keysyms::KEY_XF86AudioMute,
         "calculator" => keysyms::KEY_XF86Calculator,
+        "brightnessup" => keysyms::KEY_XF86MonBrightnessUp,
+        "brightnessdown" => keysyms::KEY_XF86MonBrightnessDown,
+        "sleep" => keysyms::KEY_XF86Sleep,
         _ => return None,
     };
     Some(Keysym::new(raw))
@@ -101,7 +156,7 @@ fn key_from_name(name: &str) -> Option<Keysym> {
 }
 
 impl Chord {
-    /// Parse "Super+Shift+Page_Up", "Ctrl+Alt+T", "Super+/", "Print".
+    /// Parse "Super+Shift+Page_Up", "Ctrl+Alt+T", "Super+/", "Print", "Alt+Shift".
     pub fn parse(spec: &str) -> Result<Chord, String> {
         let spec = spec.trim();
         if spec.is_empty() {
@@ -118,45 +173,49 @@ impl Chord {
         };
         let mut mods = Mods::default();
         for m in mods_part.split('+').map(str::trim).filter(|m| !m.is_empty()) {
-            match m.to_ascii_lowercase().as_str() {
-                "super" | "logo" | "win" | "mod4" | "meta" => mods.logo = true,
-                "ctrl" | "control" => mods.ctrl = true,
-                "alt" | "mod1" => mods.alt = true,
-                "shift" => mods.shift = true,
-                _ => return Err(format!("unknown modifier '{m}' in '{spec}' (use Super, Ctrl, Alt, Shift)")),
+            if !set_modifier(&mut mods, m) {
+                return Err(format!("unknown modifier '{m}' in '{spec}' (use Super, Ctrl, Alt, Shift)"));
             }
         }
-        let key = key_from_name(key_name.trim()).ok_or_else(|| format!("unknown key '{}' in '{spec}'", key_name.trim()))?;
+        let key_name = key_name.trim();
+        if key_name != "+" && set_modifier(&mut mods, key_name) {
+            // Modifiers only: a lone modifier would fire on every tap of it
+            // (and a lone Super is the overview gesture).
+            if mods.count() < 2 {
+                return Err(format!("'{spec}' is a single modifier; a chord of modifiers needs two or more (e.g. Alt+Shift)"));
+            }
+            return Ok(Chord { mods, key: Keysym::NoSymbol });
+        }
+        let key = key_from_name(key_name).ok_or_else(|| format!("unknown key '{key_name}' in '{spec}'"))?;
         Ok(Chord { mods, key: lower(key) })
     }
 
-    /// Canonical text form, e.g. "Super+Shift+Page_Up" or "Super+/".
+    /// A chord of modifiers only (fires on their release).
+    pub fn is_modifier_only(&self) -> bool {
+        self.key == Keysym::NoSymbol
+    }
+
+    /// Canonical text form, e.g. "Super+Shift+Page_Up", "Super+/" or "Alt+Shift".
     pub fn spec(&self) -> String {
-        let mut s = String::new();
-        for (on, name) in [(self.mods.logo, "Super"), (self.mods.ctrl, "Ctrl"), (self.mods.alt, "Alt"), (self.mods.shift, "Shift")] {
-            if on {
-                s.push_str(name);
-                s.push('+');
-            }
+        let mut s: Vec<String> = self.mods.names().map(String::from).collect();
+        if !self.is_modifier_only() {
+            s.push(match (printable(self.key), self.key.raw()) {
+                (Some(c), _) => c.to_uppercase().collect(),
+                // xkb names these by their older aliases (Prior, Next).
+                (None, keysyms::KEY_Page_Up) => "Page_Up".into(),
+                (None, keysyms::KEY_Page_Down) => "Page_Down".into(),
+                (None, _) => xkb::keysym_get_name(self.key),
+            });
         }
-        match (printable(self.key), self.key.raw()) {
-            (Some(c), _) => s.extend(c.to_uppercase()),
-            // xkb names these by their older aliases (Prior, Next).
-            (None, keysyms::KEY_Page_Up) => s.push_str("Page_Up"),
-            (None, keysyms::KEY_Page_Down) => s.push_str("Page_Down"),
-            (None, _) => s.push_str(&xkb::keysym_get_name(self.key)),
-        }
-        s
+        s.join("+")
     }
 
     /// What to print on the key caps of this chord, modifiers first.
     pub fn caps(&self) -> Vec<String> {
-        let mut caps: Vec<String> = [(self.mods.logo, "Super"), (self.mods.ctrl, "Ctrl"), (self.mods.alt, "Alt"), (self.mods.shift, "Shift")]
-            .iter()
-            .filter(|(on, _)| *on)
-            .map(|(_, n)| n.to_string())
-            .collect();
-        caps.push(key_label(self.key));
+        let mut caps: Vec<String> = self.mods.names().map(String::from).collect();
+        if !self.is_modifier_only() {
+            caps.push(key_label(self.key));
+        }
         caps
     }
 }
@@ -187,6 +246,7 @@ pub fn key_label(sym: Keysym) -> String {
         keysyms::KEY_XF86Calculator => "Calculator",
         keysyms::KEY_XF86MonBrightnessUp => "Brightness Up",
         keysyms::KEY_XF86MonBrightnessDown => "Brightness Down",
+        keysyms::KEY_XF86Sleep => "Sleep",
         _ => "",
     };
     if !named.is_empty() {
@@ -245,6 +305,11 @@ pub fn parse_action(name: &str, command: Option<Vec<String>>) -> Result<Option<A
         "volume-up" => Action::Volume(VolumeCmd::Up),
         "volume-down" => Action::Volume(VolumeCmd::Down),
         "volume-mute" => Action::Volume(VolumeCmd::ToggleMute),
+        "brightness-up" => Action::Brightness(BrightnessCmd::Up),
+        "brightness-down" => Action::Brightness(BrightnessCmd::Down),
+        "switch-layout" => Action::SwitchLayout { backward: false },
+        "switch-layout-backward" => Action::SwitchLayout { backward: true },
+        "suspend" => Action::Suspend,
         "hud" => Action::ToggleHud,
         "quit-session" => Action::Quit,
         _ => {
@@ -283,6 +348,11 @@ pub fn action_name(a: &Action) -> String {
         Action::Volume(VolumeCmd::Up) => "volume-up".into(),
         Action::Volume(VolumeCmd::Down) => "volume-down".into(),
         Action::Volume(VolumeCmd::ToggleMute) => "volume-mute".into(),
+        Action::Brightness(BrightnessCmd::Up) => "brightness-up".into(),
+        Action::Brightness(BrightnessCmd::Down) => "brightness-down".into(),
+        Action::SwitchLayout { backward: false } => "switch-layout".into(),
+        Action::SwitchLayout { backward: true } => "switch-layout-backward".into(),
+        Action::Suspend => "suspend".into(),
         Action::ToggleHud => "hud".into(),
         Action::Quit => "quit-session".into(),
         Action::None | Action::VtSwitch(_) | Action::ShellKey { .. } => "none".into(),
@@ -317,6 +387,11 @@ fn default_label(a: &Action) -> (String, &'static str) {
         Action::Volume(VolumeCmd::Up) => ("Volume up", "System"),
         Action::Volume(VolumeCmd::Down) => ("Volume down", "System"),
         Action::Volume(VolumeCmd::ToggleMute) => ("Mute", "System"),
+        Action::Brightness(BrightnessCmd::Up) => ("Brightness up", "System"),
+        Action::Brightness(BrightnessCmd::Down) => ("Brightness down", "System"),
+        Action::SwitchLayout { backward: false } => ("Switch keyboard layout", "System"),
+        Action::SwitchLayout { backward: true } => ("Previous keyboard layout", "System"),
+        Action::Suspend => ("Suspend", "System"),
         Action::ToggleHud => ("Frame-time HUD", "System"),
         Action::Quit => ("Log out", "System"),
         Action::None | Action::VtSwitch(_) | Action::ShellKey { .. } => ("", "System"),
@@ -541,28 +616,64 @@ impl KeyBindings {
         if errors.is_empty() { Ok(keys) } else { Err(errors.join("\n")) }
     }
 
-    /// The binding for a key press. `latin` is the key's symbol in the first
-    /// Latin layout, `raw` its unmodified symbol in the active layout and
-    /// `modified` the symbol with modifiers applied.
-    pub fn lookup(&self, mods: Mods, latin: Keysym, raw: Keysym, modified: Keysym) -> Option<&Binding> {
+    /// The binding for a key press (see [`KeySyms`] for what is tried).
+    pub fn lookup(&self, mods: Mods, syms: &KeySyms) -> Option<&Binding> {
         let find = |m: Mods, k: Keysym| {
             let chord = Chord { mods: m, key: lower(k) };
             self.bindings.iter().find(|b| b.chord == chord)
         };
-        if let Some(b) = find(mods, latin) {
-            return Some(b);
-        }
-        if raw != latin {
-            if let Some(b) = find(mods, raw) {
+        let base = syms.layouts.iter().map(|(b, _)| *b).chain([syms.raw]).filter(|k| *k != Keysym::NoSymbol);
+        let mut tried: Vec<Keysym> = Vec::with_capacity(4);
+        for k in base {
+            let k = lower(k);
+            if tried.contains(&k) {
+                continue;
+            }
+            tried.push(k);
+            if let Some(b) = find(mods, k) {
                 return Some(b);
             }
         }
         // A symbol that needs Shift: Super+Shift+/ is Super+? (but Super+Shift+T is not Super+T).
-        let m = lower(modified);
-        if mods.shift && modified != Keysym::NoSymbol && m != lower(raw) && m != lower(latin) {
-            return find(Mods { shift: false, ..mods }, modified);
+        if mods.shift {
+            let unshifted = Mods { shift: false, ..mods };
+            let shifted = syms.layouts.iter().map(|(_, s)| *s).chain([syms.modified]);
+            for k in shifted.filter(|k| *k != Keysym::NoSymbol) {
+                let k = lower(k);
+                if !tried.contains(&k) {
+                    if let Some(b) = find(unshifted, k) {
+                        return Some(b);
+                    }
+                }
+            }
         }
         None
+    }
+
+    /// The modifier-only binding for exactly `mods` (e.g. Alt+Shift).
+    pub fn lookup_modifiers(&self, mods: Mods) -> Option<&Binding> {
+        self.bindings.iter().find(|b| b.chord.is_modifier_only() && b.chord.mods == mods)
+    }
+}
+
+/// The symbols of one physical key that shortcuts are matched against.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeySyms {
+    /// Per configured layout, first layout first: the unshifted symbol and
+    /// the one Shift gives (level 2). Matching the first layout first keeps
+    /// shortcuts on the same keys whatever layout is active.
+    pub layouts: Vec<(Keysym, Keysym)>,
+    /// Unmodified symbol in the active layout.
+    pub raw: Keysym,
+    /// Symbol with the current modifiers applied.
+    pub modified: Keysym,
+}
+
+impl KeySyms {
+    /// A key that has the same symbols in every layout.
+    #[cfg(test)]
+    pub fn single(raw: Keysym, shifted: Keysym, modified: Keysym) -> KeySyms {
+        KeySyms { layouts: vec![(raw, shifted)], raw, modified }
     }
 }
 
@@ -608,6 +719,14 @@ mod tests {
         assert!(Chord::parse("Hyper+T").unwrap_err().contains("unknown modifier"));
         assert!(Chord::parse("Super+NoSuchKey").unwrap_err().contains("unknown key"));
         assert!(Chord::parse("").is_err());
+        // Modifiers only.
+        let c = Chord::parse("Alt+Shift").unwrap();
+        assert!(c.is_modifier_only() && c.mods == mods("alt+shift"));
+        assert_eq!(c, Chord::parse("shift+alt").unwrap());
+        assert!(Chord::parse("Shift").unwrap_err().contains("single modifier"));
+        assert!(Chord::parse("Super+Super").unwrap_err().contains("single modifier"));
+        assert!(!Chord::parse("Super+Space").unwrap().is_modifier_only());
+        assert!(!Chord::parse("Shift++").unwrap().is_modifier_only());
     }
 
     #[test]
@@ -619,6 +738,9 @@ mod tests {
         assert_eq!(Chord::parse("Super+Return").unwrap().caps(), vec!["Super", "Enter"]);
         assert_eq!(Chord::parse("XF86AudioMute").unwrap().caps(), vec!["Mute"]);
         assert_eq!(Chord::parse("Alt+Shift+Tab").unwrap().caps(), vec!["Alt", "Shift", "Tab"]);
+        assert_eq!(Chord::parse("shift+alt").unwrap().caps(), vec!["Alt", "Shift"]);
+        assert_eq!(Chord::parse("shift+alt").unwrap().spec(), "Alt+Shift");
+        assert_eq!(Chord::parse("XF86MonBrightnessUp").unwrap().caps(), vec!["Brightness Up"]);
         // Every canonical spec parses back to the same chord.
         for b in KeyBindings::builtin().bindings {
             assert_eq!(Chord::parse(&b.chord.spec()).unwrap(), b.chord, "{}", b.chord.spec());
@@ -631,7 +753,7 @@ mod tests {
             "overview", "app-grid", "shortcuts", "close-window", "maximize", "restore", "tile-left", "tile-right", "fullscreen",
             "switcher", "switcher-reverse", "workspace-1", "workspace-4", "workspace-left", "workspace-right", "move-to-workspace-2",
             "move-to-workspace-left", "move-to-workspace-right", "screenshot", "volume-up", "volume-down", "volume-mute", "hud",
-            "quit-session",
+            "quit-session", "brightness-up", "brightness-down", "switch-layout", "switch-layout-backward", "suspend",
         ] {
             let a = parse_action(name, None).unwrap().unwrap();
             assert_eq!(action_name(&a), name);
@@ -668,6 +790,14 @@ mod tests {
         assert_eq!(find("Super+I"), spawn(&["lumen-settings"]));
         assert_eq!(find("Ctrl+Shift+Escape"), spawn(&["lumen-monitor"]));
         assert_eq!(find("Super+K"), spawn(&["lumen-calc"]));
+        assert_eq!(find("Super+G"), spawn(&["lumen-steam"]));
+        for s in ["Super+Space", "Alt+Shift"] {
+            assert_eq!(find(s), Some(Action::SwitchLayout { backward: false }), "{s}");
+        }
+        assert_eq!(find("Super+Shift+Space"), Some(Action::SwitchLayout { backward: true }));
+        assert_eq!(find("XF86MonBrightnessUp"), Some(Action::Brightness(BrightnessCmd::Up)));
+        assert_eq!(find("XF86MonBrightnessDown"), Some(Action::Brightness(BrightnessCmd::Down)));
+        assert_eq!(find("XF86Sleep"), Some(Action::Suspend));
         assert_eq!(find("XF86Calculator"), spawn(&["lumen-calc"]));
         for s in ["Super+/", "Super+?", "Super+F1"] {
             assert_eq!(find(s), Some(Action::ToggleShortcuts), "{s}");
@@ -704,7 +834,7 @@ mod tests {
             action = "none"
 
             [[bind]]
-            keys = "Super+G"
+            keys = "Super+J"
             action = "spawn"
             command = ["gimp"]
             label = "GIMP"
@@ -719,9 +849,14 @@ mod tests {
         assert!(pos(&keys, "Super+H").is_none() && pos(&keys, "Super+Q").is_none());
         // Other chords of the old binding still work.
         assert_eq!(keys.bindings[pos(&keys, "Super+T").unwrap()].action, Action::Spawn(vec!["lumen-term".into()]));
-        let g = &keys.bindings[pos(&keys, "Super+G").unwrap()];
+        let g = &keys.bindings[pos(&keys, "Super+J").unwrap()];
         assert_eq!((g.label.as_str(), g.group.as_str()), ("GIMP", "Apps"));
-        assert_eq!(pos(&keys, "Super+G"), Some(keys.bindings.len() - 1));
+        assert_eq!(pos(&keys, "Super+J"), Some(keys.bindings.len() - 1));
+        // Rebinding a default keeps its place: Steam's chord now opens GIMP.
+        let steam_pos = pos(&keys, "Super+G").unwrap();
+        keys.apply(parse_file("[[bind]]\nkeys = \"Super+G\"\naction = \"spawn\"\ncommand = \"gimp\"\n").unwrap());
+        assert_eq!(pos(&keys, "Super+G"), Some(steam_pos));
+        assert_eq!(keys.bindings[steam_pos].action, Action::Spawn(vec!["gimp".into()]));
     }
 
     #[test]
@@ -744,22 +879,66 @@ mod tests {
     #[test]
     fn lookup_matches_case_and_shifted_symbols() {
         let keys = KeyBindings::builtin();
-        let action = |m: &str, latin: u32, raw: u32, modified: u32| keys.lookup(mods(m), k(latin), k(raw), k(modified)).map(|b| b.action.clone());
+        let action = |m: &str, raw: u32, shifted: u32, modified: u32| {
+            keys.lookup(mods(m), &KeySyms::single(k(raw), k(shifted), k(modified))).map(|b| b.action.clone())
+        };
         let term = Some(Action::Spawn(vec!["lumen-term".into()]));
         // Ctrl+Alt+T with Caps Lock or a typed capital: the same binding.
-        assert_eq!(action("ctrl+alt", keysyms::KEY_t, keysyms::KEY_t, keysyms::KEY_T), term);
-        // A Cyrillic layout: the Latin symbol of the key is used.
-        assert_eq!(action("super", keysyms::KEY_t, keysyms::KEY_Cyrillic_ie, keysyms::KEY_Cyrillic_ie), term);
+        assert_eq!(action("ctrl+alt", keysyms::KEY_t, keysyms::KEY_T, keysyms::KEY_T), term);
         // Super+? is Super+Shift+/ on a US keyboard.
         let sheet = Some(Action::ToggleShortcuts);
-        assert_eq!(action("super", keysyms::KEY_slash, keysyms::KEY_slash, keysyms::KEY_slash), sheet);
-        assert_eq!(action("super+shift", keysyms::KEY_slash, keysyms::KEY_slash, keysyms::KEY_question), sheet);
+        assert_eq!(action("super", keysyms::KEY_slash, keysyms::KEY_question, keysyms::KEY_slash), sheet);
+        assert_eq!(action("super+shift", keysyms::KEY_slash, keysyms::KEY_question, keysyms::KEY_question), sheet);
         // Shift is significant where it is part of the chord...
-        assert_eq!(action("super+shift", keysyms::KEY_Page_Up, keysyms::KEY_Page_Up, keysyms::KEY_Page_Up), Some(Action::MoveToWorkspaceRelative(-1)));
-        assert_eq!(action("alt+shift", keysyms::KEY_Tab, keysyms::KEY_Tab, keysyms::KEY_ISO_Left_Tab), Some(Action::SwitcherNext { reverse: true }));
+        let ws_left = Some(Action::MoveToWorkspaceRelative(-1));
+        assert_eq!(action("super+shift", keysyms::KEY_Page_Up, keysyms::KEY_Page_Up, keysyms::KEY_Page_Up), ws_left);
+        let rev = Some(Action::SwitcherNext { reverse: true });
+        assert_eq!(action("alt+shift", keysyms::KEY_Tab, keysyms::KEY_ISO_Left_Tab, keysyms::KEY_ISO_Left_Tab), rev);
+        assert_eq!(action("super+shift", keysyms::KEY_3, keysyms::KEY_numbersign, keysyms::KEY_numbersign), Some(Action::MoveToWorkspace(2)));
         // ...and an uppercase letter is not a shifted symbol.
-        assert_eq!(action("super+shift", keysyms::KEY_t, keysyms::KEY_t, keysyms::KEY_T), None);
-        assert_eq!(action("", keysyms::KEY_t, keysyms::KEY_t, keysyms::KEY_t), None);
+        assert_eq!(action("super+shift", keysyms::KEY_t, keysyms::KEY_T, keysyms::KEY_T), None);
+        assert_eq!(action("", keysyms::KEY_t, keysyms::KEY_T, keysyms::KEY_t), None);
         assert_eq!(action("", keysyms::KEY_Print, keysyms::KEY_Print, keysyms::KEY_Print), Some(Action::Screenshot));
+        assert_eq!(action("super", keysyms::KEY_space, keysyms::KEY_space, keysyms::KEY_space), Some(Action::SwitchLayout { backward: false }));
+    }
+
+    #[test]
+    fn lookup_works_in_every_layout() {
+        let keys = KeyBindings::builtin();
+        // Layouts "us,ru" with the Russian one active: the T key types "е",
+        // the / key "." (Shift: ","), the 3 key "3" (Shift: "№").
+        let ru_key = |us: (u32, u32), ru: (u32, u32), modified: u32| KeySyms {
+            layouts: vec![(k(us.0), k(us.1)), (k(ru.0), k(ru.1))],
+            raw: k(ru.0),
+            modified: k(modified),
+        };
+        let t = ru_key((keysyms::KEY_t, keysyms::KEY_T), (keysyms::KEY_Cyrillic_ie, keysyms::KEY_Cyrillic_IE), keysyms::KEY_Cyrillic_ie);
+        assert_eq!(keys.lookup(mods("super"), &t).map(|b| b.action.clone()), Some(Action::Spawn(vec!["lumen-term".into()])));
+        let slash = ru_key((keysyms::KEY_slash, keysyms::KEY_question), (keysyms::KEY_period, keysyms::KEY_comma), keysyms::KEY_period);
+        assert_eq!(keys.lookup(mods("super"), &slash).map(|b| b.action.clone()), Some(Action::ToggleShortcuts));
+        let shifted = KeySyms { modified: k(keysyms::KEY_comma), ..slash.clone() };
+        assert_eq!(keys.lookup(mods("super+shift"), &shifted).map(|b| b.action.clone()), Some(Action::ToggleShortcuts));
+        // The first layout wins: with "ru,us", Super+. (unbound) is tried before Super+/.
+        let mut user = KeyBindings::builtin();
+        user.apply(parse_file("[[bind]]\nkeys = \"Super+.\"\naction = \"maximize\"\n").unwrap());
+        let ru_first = KeySyms { layouts: vec![slash.layouts[1], slash.layouts[0]], ..slash.clone() };
+        assert_eq!(user.lookup(mods("super"), &ru_first).map(|b| b.action.clone()), Some(Action::Maximize));
+        assert_eq!(user.lookup(mods("super"), &slash).map(|b| b.action.clone()), Some(Action::ToggleShortcuts));
+    }
+
+    #[test]
+    fn modifier_only_chords() {
+        let keys = KeyBindings::builtin();
+        assert_eq!(keys.lookup_modifiers(mods("alt+shift")).map(|b| b.action.clone()), Some(Action::SwitchLayout { backward: false }));
+        assert!(keys.lookup_modifiers(mods("alt")).is_none());
+        assert!(keys.lookup_modifiers(mods("ctrl+shift")).is_none());
+        // A modifier-only chord never matches as a key chord, and vice versa.
+        let shift_key = KeySyms::single(k(keysyms::KEY_Shift_L), k(keysyms::KEY_Shift_L), k(keysyms::KEY_Shift_L));
+        assert!(keys.lookup(mods("alt+shift"), &shift_key).is_none());
+        assert!(is_modifier_key(k(keysyms::KEY_Shift_L)) && is_modifier_key(k(keysyms::KEY_Super_R)) && !is_modifier_key(k(keysyms::KEY_Tab)));
+        let mut user = KeyBindings::builtin();
+        user.apply(parse_file("[[bind]]\nkeys = [\"Ctrl+Shift\"]\naction = \"switch-layout\"\n\n[[bind]]\nkeys = \"Alt+Shift\"\naction = \"none\"\n").unwrap());
+        assert!(user.lookup_modifiers(mods("alt+shift")).is_none());
+        assert!(user.lookup_modifiers(mods("ctrl+shift")).is_some());
     }
 }

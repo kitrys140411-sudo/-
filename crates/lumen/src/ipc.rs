@@ -18,6 +18,10 @@
 //!   notify <title>|<body>
 //!   keybindings              the live shortcut table (JSON)
 //!   reload-keybindings       re-read the keybinding files
+//!   input                    keyboard layouts and pointer settings (JSON)
+//!   reload-input             re-read input.toml (layouts, touchpad, mouse)
+//!   layout <n>               make keyboard layout n (0-based) active
+//!   switch lid closed|open   a laptop lid switch event (as from libinput)
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -173,6 +177,22 @@ impl Lumen {
                 Ok(n) => format!("ok {n} shortcuts"),
                 Err(e) => format!("error {}", e.replace('\n', "; ")),
             },
+            ("input", []) => self.ipc_input(),
+            ("reload-input", []) => match self.reload_input() {
+                Ok(summary) => format!("ok {summary}"),
+                Err(e) => format!("error {}", e.replace('\n', "; ")),
+            },
+            ("layout", [n]) => match n.parse::<u32>() {
+                Ok(n) if n < self.layouts.count() => {
+                    self.set_layout(n);
+                    "ok".into()
+                }
+                _ => format!("error no layout {n} (there are {})", self.layouts.count()),
+            },
+            ("switch", ["lid", st @ ("closed" | "open")]) => {
+                self.on_lid(*st == "closed");
+                "ok".into()
+            }
             ("stats-reset", []) => {
                 self.stats = Default::default();
                 "ok".into()
@@ -285,6 +305,34 @@ impl Lumen {
         self.bindings_json()
     }
 
+    fn ipc_input(&self) -> String {
+        let list = |v: &[String]| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",");
+        let c = &self.input_cfg;
+        let k = &c.keyboard;
+        format!(
+            "{{\"layouts\":[{}],\"labels\":[{}],\"active\":{},\"indicator\":{},\"xkb\":{{\"layout\":{},\"variant\":{},\"options\":{},\"model\":{}}},\"per_window\":{},\"repeat_delay\":{},\"repeat_rate\":{},\"touchpad\":{{\"tap_to_click\":{},\"natural_scroll\":{},\"speed\":{},\"disable_while_typing\":{},\"click_method\":{}}},\"mouse\":{{\"natural_scroll\":{},\"speed\":{},\"accel_profile\":{}}}}}",
+            list(&self.layouts.names),
+            list(&self.layouts.labels),
+            self.layouts.active,
+            self.layouts.indicator().map(json_str).unwrap_or_else(|| "null".into()),
+            json_str(&k.xkb_layout()),
+            json_str(&k.xkb_variant()),
+            json_str(&k.xkb_options().unwrap_or_default()),
+            json_str(&k.model),
+            k.per_window,
+            k.repeat_delay,
+            k.repeat_rate,
+            c.touchpad.tap_to_click,
+            c.touchpad.natural_scroll,
+            c.touchpad.speed,
+            c.touchpad.disable_while_typing,
+            json_str(&format!("{:?}", c.touchpad.click_method).to_lowercase()),
+            c.mouse.natural_scroll,
+            c.mouse.speed,
+            json_str(&format!("{:?}", c.mouse.accel_profile).to_lowercase()),
+        )
+    }
+
     fn ipc_windows(&self) -> String {
         let items: Vec<String> = self
             .wm
@@ -332,7 +380,15 @@ impl Lumen {
         let dock: Vec<String> = sh
             .dock_items(&self.wm)
             .iter()
-            .map(|d| format!("{{\"id\":{},\"name\":{},\"windows\":{}}}", json_str(&d.id), json_str(&d.name), d.windows.len()))
+            .map(|d| {
+                format!(
+                    "{{\"id\":{},\"name\":{},\"icon\":{},\"windows\":{}}}",
+                    json_str(&d.id),
+                    json_str(&d.name),
+                    json_str(&d.icon),
+                    d.windows.len()
+                )
+            })
             .collect();
         let hits: Vec<String> = sh
             .hits
@@ -366,10 +422,25 @@ impl Lumen {
             .osd
             .as_ref()
             .filter(|o| o.anim.target > 0.0)
-            .map(|o| format!("{{\"level\":{:.3},\"muted\":{},\"icon\":{}}}", o.level, o.muted, json_str(o.icon())))
+            .map(|o| {
+                format!("{{\"kind\":\"{}\",\"level\":{:.3},\"muted\":{},\"icon\":{}}}", o.kind.name(), o.level, o.muted, json_str(o.icon()))
+            })
             .unwrap_or_else(|| "null".into());
+        let battery = sh
+            .battery
+            .map(|b| {
+                format!(
+                    "{{\"percent\":{:.1},\"charge\":\"{:?}\",\"on_ac\":{},\"time_left_s\":{}}}",
+                    b.percent,
+                    b.charge,
+                    b.on_ac,
+                    b.time_left.map(|t| t.as_secs().to_string()).unwrap_or_else(|| "null".into())
+                )
+            })
+            .unwrap_or_else(|| "null".into());
+        let layout = sh.layout_label.as_deref().map(json_str).unwrap_or_else(|| "null".into());
         format!(
-            "{{\"overview\":{},\"apps_mode\":{},\"query\":{},\"results\":[{}],\"visible_apps\":[{}],\"selected\":{},\"popover\":{},\"switcher\":{},\"dock_shown\":{:.3},\"notifications\":[{}],\"dock\":[{}],\"hits\":[{}],\"shortcuts\":{},\"shortcuts_shown\":{:.3},\"shortcuts_query\":{},\"shortcuts_rows\":[{}],\"shortcuts_selected\":{},\"shortcuts_scroll\":{:.1},\"shortcuts_max_scroll\":{:.1},\"osd\":{},\"bindings\":{}}}",
+            "{{\"overview\":{},\"apps_mode\":{},\"query\":{},\"results\":[{}],\"visible_apps\":[{}],\"selected\":{},\"popover\":{},\"switcher\":{},\"dock_shown\":{:.3},\"notifications\":[{}],\"dock\":[{}],\"hits\":[{}],\"shortcuts\":{},\"shortcuts_shown\":{:.3},\"shortcuts_query\":{},\"shortcuts_rows\":[{}],\"shortcuts_selected\":{},\"shortcuts_scroll\":{:.1},\"shortcuts_max_scroll\":{:.1},\"osd\":{},\"layout\":{},\"battery\":{},\"lid_closed\":{},\"icons_pending\":{},\"bindings\":{}}}",
             sh.overview_open,
             sh.apps_mode,
             json_str(&sh.query),
@@ -390,6 +461,10 @@ impl Lumen {
             sheet.map(|s| s.scroll.value).unwrap_or(0.0),
             sheet.map(|s| s.max_scroll()).unwrap_or(0.0),
             osd,
+            layout,
+            battery,
+            self.lid_closed,
+            self.render.icons.pending(),
             self.bindings_json(),
         )
     }

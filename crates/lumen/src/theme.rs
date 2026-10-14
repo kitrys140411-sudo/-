@@ -84,6 +84,8 @@ pub struct Colors {
     pub text: Color,
     pub text_dim: Color,
     pub danger: Color,
+    /// Good news (a charging battery).
+    pub success: Color,
     pub shadow: Color,
     pub overview_dim: Color,
 }
@@ -107,6 +109,7 @@ impl Default for Colors {
             text: c("#ececf2"),
             text_dim: c("#9a9aaa"),
             danger: c("#ff7b72"),
+            success: c("#8fd694"),
             shadow: c("#000000"),
             overview_dim: c("#00000040"),
         }

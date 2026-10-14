@@ -251,7 +251,7 @@ fn panel(ui: &mut Ui) {
     let at = Point::from((out.loc.x + (out.size.w - cw) / 2.0, out.loc.y + (h - chh) / 2.0));
     ui.text(&clock, &style, at, None, None, 1.0);
 
-    // Power button on the right.
+    // Power button on the right, the battery and the keyboard layout left of it.
     let p = layout::power_rect(theme, out);
     ui.hit(p, Hit::Power);
     let isz = g * 2.0;
@@ -260,10 +260,92 @@ fn panel(ui: &mut Ui) {
         let pad = g * 0.5;
         ui.rect("power-hover", 0, layout::rect(p.loc.x, p.loc.y + pad, p.size.w, h - pad * 2.0), (h - pad * 2.0) / 2.0, theme.colors.surface_hover, None, 1.0);
     }
+    let mut right = p.loc.x;
+    if let Some(b) = ui.ctx.shell.battery {
+        right = battery(ui, &b, right);
+    }
+    if let Some(label) = ui.ctx.shell.layout_label.clone() {
+        layout_indicator(ui, &label, right);
+    }
 
     // The bar itself fades out in the overview, leaving its content floating.
     let bar = layout::rect(out.loc.x, out.loc.y, out.size.w, h);
     ui.glass("panel", 0, bar, 0.0, theme.colors.panel, None, 1.0 - overview * 0.85);
+}
+
+/// The keyboard layout indicator ("EN") ending at `right`: a key-cap outline
+/// around the label; a click switches the layout.
+fn layout_indicator(ui: &mut Ui, label: &str, right: f64) -> f64 {
+    let theme = ui.ctx.theme;
+    let (g, h, top) = (theme.geometry.grid, theme.geometry.panel_height, ui.out.loc.y);
+    let style = Style::new(12.0, theme.colors.text).weight(Weight::SemiBold);
+    let (tw, th) = ui.measure(label, &style, None, Some(1));
+    let cap_w = (tw + g * 1.5).max(g * 3.75).round();
+    let cap_h = (g * 2.5).round();
+    let area = layout::rect(right - cap_w - g * 2.0, top, cap_w + g * 2.0, h);
+    ui.hit(area, Hit::Layout);
+    let cap = layout::rect(ui.snap(area.loc.x + g), ui.snap(top + (h - cap_h) / 2.0), cap_w, cap_h);
+    ui.text(label, &style, Point::from((cap.loc.x + (cap_w - tw) / 2.0, top + (h - th) / 2.0)), None, Some(1), 1.0);
+    let hover = ui.ctx.shell.hover == Some(Hit::Layout);
+    let fill = if hover { theme.colors.surface_hover } else { theme.colors.surface.with_alpha(0.0) };
+    ui.rect("layout-cap", 0, cap, g * 0.75, fill, Some((theme.colors.text_dim.with_alpha(0.55), 1.0)), 1.0);
+    area.loc.x
+}
+
+/// What the battery tooltip says.
+fn battery_text(b: &crate::power::Battery) -> String {
+    use crate::power::{format_duration, Charge};
+    let pct = format!("{}%", b.percent.round() as i64);
+    match (b.charge, b.time_left) {
+        (Charge::Charging, Some(t)) => format!("Charging \u{b7} {pct} \u{b7} full in {}", format_duration(t)),
+        (Charge::Charging, None) => format!("Charging \u{b7} {pct}"),
+        (Charge::Full, _) => "Fully charged".into(),
+        (Charge::Discharging, Some(t)) => format!("{pct} \u{b7} {} left", format_duration(t)),
+        _ if b.on_ac => format!("Plugged in \u{b7} {pct}"),
+        _ => pct,
+    }
+}
+
+/// The battery ending at `right`: an outline whose fill shows the charge
+/// (red when low), a bolt while charging, and the percentage.
+fn battery(ui: &mut Ui, b: &crate::power::Battery, right: f64) -> f64 {
+    let theme = ui.ctx.theme;
+    let c = &theme.colors;
+    let (g, h, top) = (theme.geometry.grid, theme.geometry.panel_height, ui.out.loc.y);
+    let style = Style::new(12.5, c.text).weight(Weight::Medium);
+    let text = format!("{}%", b.percent.round() as i64);
+    let (tw, th) = ui.measure(&text, &style, None, Some(1));
+    let charging = b.charge == crate::power::Charge::Charging;
+    let (body_w, body_h, nub_w) = ((g * 2.75).round(), (g * 1.5).round(), (g * 0.25).round().max(2.0));
+    let bolt = if charging { g * 1.75 } else { 0.0 };
+    let w = g + bolt + body_w + nub_w + g * 0.75 + tw + g;
+    let area = layout::rect(right - w, top, w, h);
+    ui.hit(area, Hit::Battery);
+    let mut x = area.loc.x + g;
+    if charging {
+        ui.icon("battery-charging", layout::rect(x - g * 0.25, top + (h - g * 2.0) / 2.0, g * 2.0, g * 2.0), 0.95, "");
+        x += bolt;
+    }
+    let body = layout::rect(ui.snap(x), ui.snap(top + (h - body_h) / 2.0), body_w, body_h);
+    let low = b.percent <= crate::power::LOW && !b.plugged();
+    let fill_color = if low { c.danger } else if charging { c.success } else { c.text };
+    let inset = 2.0;
+    let fill_w = ((body_w - inset * 2.0) * b.fraction()).max(if b.percent > 0.5 { 1.5 } else { 0.0 });
+    if fill_w > 0.0 {
+        let fill = layout::rect(body.loc.x + inset, body.loc.y + inset, fill_w, body_h - inset * 2.0);
+        ui.rect("battery-fill", 0, fill, 1.0, fill_color, None, 1.0);
+    }
+    let outline = c.text.with_alpha(0.8);
+    ui.rect("battery-body", 0, body, 3.0, c.text.with_alpha(0.0), Some((outline, 1.25)), 1.0);
+    let nub = layout::rect(body.loc.x + body_w, body.loc.y + body_h * 0.3, nub_w, body_h * 0.4);
+    ui.rect("battery-nub", 0, nub, 1.0, outline, None, 1.0);
+    let text_style = if low { Style::new(12.5, c.danger).weight(Weight::Medium) } else { style };
+    ui.text(&text, &text_style, Point::from((body.loc.x + body_w + nub_w + g * 0.75, top + (h - th) / 2.0)), None, Some(1), 1.0);
+    if ui.ctx.shell.hover == Some(Hit::Battery) {
+        let tip = battery_text(b);
+        tooltip(ui, &tip, area, 1.0, true);
+    }
+    area.loc.x
 }
 
 fn dock(ui: &mut Ui) {
@@ -287,12 +369,12 @@ fn dock(ui: &mut Ui) {
     if let Some(Hit::DockItem(i)) = ui.ctx.shell.hover {
         if let Some(item) = items.get(i) {
             let cell = dock_cell(theme, dock, n, i);
-            tooltip(ui, &item.name.clone(), cell, alpha);
+            tooltip(ui, &item.name.clone(), cell, alpha, false);
         }
     }
     if ui.ctx.shell.hover == Some(Hit::DockApps) {
         let cell = dock_cell(theme, dock, n, n);
-        tooltip(ui, "Show Apps", cell, alpha);
+        tooltip(ui, "Show Apps", cell, alpha, false);
     }
     for (i, item) in items.iter().enumerate() {
         let cell = dock_cell(theme, dock, n, i);
@@ -325,7 +407,8 @@ fn dock(ui: &mut Ui) {
     ui.ctx.shell.shapes.retain(|k, i| !(k == "dock-dot" || k == "dock-hover") || (i as usize) < n.max(1));
 }
 
-fn tooltip(ui: &mut Ui, text: &str, anchor: Rect, alpha: f32) {
+/// A one-line label above `anchor` (or below it, for the panel).
+fn tooltip(ui: &mut Ui, text: &str, anchor: Rect, alpha: f32, below: bool) {
     let theme = ui.ctx.theme;
     let g = theme.geometry.grid;
     let style = Style::new(12.0, theme.colors.text);
@@ -337,7 +420,7 @@ fn tooltip(ui: &mut Ui, text: &str, anchor: Rect, alpha: f32) {
     let lo = ui.out.loc.x + g;
     let hi = (ui.out.loc.x + ui.out.size.w - bw - g).max(lo);
     let x = (anchor.loc.x + (anchor.size.w - bw) / 2.0).clamp(lo, hi);
-    let y = anchor.loc.y - bh - g * 1.5;
+    let y = if below { anchor.loc.y + anchor.size.h + g } else { anchor.loc.y - bh - g * 1.5 };
     ui.text(text, &style, Point::from((x + g, y + g * 0.5)), Some(max_w), Some(1), alpha);
     ui.rect("tooltip", 0, layout::rect(x, y, bw, bh), bh / 2.0, theme.colors.surface, Some((theme.colors.border, 1.0)), alpha);
 }

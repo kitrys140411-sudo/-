@@ -72,12 +72,14 @@ def test_sheet_lists_filters_and_owns_the_keyboard(t):
     c.settle()
     c.screenshot("sheet")
     shown = {r["label"]: r["keys"] for r in c.shell()["shortcuts_rows"]}
-    for label in ("Terminal", "Web browser", "YouTube", "Claude Code", "Files", "Keyboard shortcuts", "Take a screenshot",
-                  "Close window", "Go to workspace", "Volume up", "Move window"):
+    for label in ("Terminal", "Web browser", "YouTube", "Claude Code", "Steam", "Files", "Keyboard shortcuts", "Take a screenshot",
+                  "Close window", "Go to workspace", "Volume up", "Brightness up", "Switch keyboard layout", "Suspend", "Move window"):
         t.check(label in shown, f"no row {label}: {sorted(shown)}")
     t.check(shown["Terminal"] == ["Super+Enter", "Super+T", "Ctrl+Alt+T"], shown["Terminal"])
     t.check(shown["Go to workspace"] == ["Super+1–4"], shown["Go to workspace"])
     t.check(shown["YouTube"] == ["Super+Y"], shown["YouTube"])
+    t.check(shown["Steam"] == ["Super+G"], shown["Steam"])
+    t.check(shown["Switch keyboard layout"] == ["Super+Space", "Alt+Shift"], shown["Switch keyboard layout"])
     client.wait_line(r"^focus out")
     # Typing filters; nothing reaches the focused client.
     before = client.count(r"^key ")

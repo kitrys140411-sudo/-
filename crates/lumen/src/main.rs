@@ -5,14 +5,19 @@ mod anim;
 mod apps;
 mod backend;
 mod background;
+mod backlight;
 mod cursor;
 mod cursor_art;
 mod handlers;
 mod icons;
+mod icontheme;
 mod input;
+mod inputcfg;
 mod ipc;
 mod keybind;
+mod layouts;
 mod png;
+mod power;
 mod render;
 mod selection;
 mod shell;
@@ -42,8 +47,10 @@ const USAGE: &str = "usage: lumen [--backend auto|udev|winit|headless] [--size W
   --scale     output scale for headless (others use LUMEN_SCALE or the display's DPI)
   -- cmd      program to start once the compositor is running
 
-environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_FAVORITES, LUMEN_SCALE,
-             LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS, XCURSOR_THEME, XCURSOR_SIZE";
+environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_INPUT (input.toml), LUMEN_FAVORITES,
+             LUMEN_SCALE, LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS/MODEL (override input.toml),
+             XCURSOR_THEME, XCURSOR_SIZE, LUMEN_INIT_CONTROL (init's socket), LUMEN_SYSFS (/sys for batteries
+             and backlights), LUMEN_POWER_POLL_MS, LUMEN_OUTPUT_NAME (headless output name)";
 
 struct Args {
     backend: String,
@@ -159,6 +166,7 @@ fn run(args: Args, sigfd: OwnedFd) -> Result<(), String> {
     tracing::info!(backend = state.backend.name(), socket = ?state.socket_name, "compositor running");
 
     state.start_clock();
+    state.start_power_monitor();
     let ipc_path = ipc::init(&mut state)?;
     tracing::info!("control socket at {}", ipc_path.display());
 

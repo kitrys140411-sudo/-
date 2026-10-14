@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use smithay::desktop::PopupManager;
-use smithay::input::keyboard::{Keysym, XkbConfig};
+use smithay::input::keyboard::{Keycode, XkbConfig};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction};
+use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
@@ -33,9 +33,14 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::backend::Backend;
-use crate::background::Background;
+use crate::background::{Background, JobQueue};
+use crate::backlight::BrightnessCmd;
 use crate::cursor::CursorTheme;
-use crate::keybind::KeyBindings;
+use crate::input::Action;
+use crate::inputcfg::{InputConfig, KeyboardConfig};
+use crate::keybind::{KeyBindings, Mods};
+use crate::layouts::{Layouts, XkbNames};
+use crate::volume::VolumeCmd;
 use crate::render::RenderState;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -127,8 +132,21 @@ pub struct Lumen {
     pub dnd_icon: Option<WlSurface>,
     pub cursor_theme: CursorTheme,
     pub pointer_pos: Point<f64, Logical>,
-    /// Keys whose release must not reach clients (consumed by shortcuts).
-    pub suppressed_keys: Vec<Keysym>,
+    /// Keys whose release must not reach clients (their press was consumed
+    /// by a shortcut or the shell). Keycodes, not symbols: a layout switch
+    /// between press and release changes the symbol.
+    pub suppressed_keys: Vec<Keycode>,
+    /// A modifier-only chord (Alt+Shift) held down and not yet spoiled by
+    /// another key or button: it fires on release.
+    pub mod_chord: Option<Mods>,
+    /// An action triggered by a key release, run after the release was
+    /// forwarded.
+    pub release_action: Option<Action>,
+    /// The held key whose action repeats (volume, brightness) and its timer.
+    pub key_repeat: Option<(Keycode, RegistrationToken)>,
+    /// Keyboard layouts and pointer settings (input.toml).
+    pub input_cfg: InputConfig,
+    pub layouts: Layouts,
     pub outputs: Vec<Output>,
 
     pub wm: Wm,
@@ -145,6 +163,14 @@ pub struct Lumen {
     pub startup_notices: Vec<(String, String)>,
     /// wpctl was found missing (logged once).
     pub wpctl_missing: bool,
+    pub volume_jobs: JobQueue<VolumeCmd>,
+    pub brightness_jobs: JobQueue<BrightnessCmd>,
+    /// A missing or read-only backlight was reported (once).
+    pub backlight_reported: bool,
+    pub battery_warned: crate::power::Warned,
+    pub lid_closed: bool,
+    /// When suspend was last requested (boot clock, includes time asleep).
+    pub last_suspend: Option<Duration>,
 }
 
 impl Lumen {
@@ -188,27 +214,38 @@ impl Lumen {
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_pointer();
-        let xkb = XkbConfig {
-            layout: &std::env::var("XKB_DEFAULT_LAYOUT").unwrap_or_default(),
-            variant: &std::env::var("XKB_DEFAULT_VARIANT").unwrap_or_default(),
-            options: std::env::var("XKB_DEFAULT_OPTIONS").ok(),
-            ..Default::default()
-        };
-        seat.add_keyboard(xkb, 400, 30).expect("cannot initialize the keyboard (xkbcommon)");
+        let mut startup_notices: Vec<(String, String)> = Vec::new();
+        let (mut input_cfg, input_errors) = InputConfig::load();
+        for e in input_errors {
+            tracing::error!("input settings: {e}");
+            startup_notices.push(("Input settings not loaded".into(), format!("{e}\nThe file was ignored.")));
+        }
+        let k = &input_cfg.keyboard;
+        let names = XkbNames::new(k);
+        if seat.add_keyboard(names.config(), k.repeat_delay, k.repeat_rate).is_err() {
+            // An unknown layout or option: type with the plain US layout rather than not at all.
+            let msg = format!("xkb cannot build a keymap for {}", names.describe());
+            tracing::error!("{msg}");
+            startup_notices.push(("Keyboard layout not loaded".into(), format!("{msg}.\nThe US layout is in effect.")));
+            input_cfg.keyboard = KeyboardConfig::default();
+            // Named explicitly: xkbcommon's defaults come from XKB_DEFAULT_* and may be what failed.
+            let us = XkbConfig { layout: "us", ..XkbConfig::default() };
+            seat.add_keyboard(us, 400, 30).expect("cannot initialize the keyboard (xkbcommon)");
+        }
+        let layouts = Layouts::new(&input_cfg.keyboard);
+        tracing::info!(layouts = %input_cfg.keyboard.xkb_layout(), "keyboard");
 
         let theme = Theme::load();
         let (keys, key_errors) = KeyBindings::load();
-        let startup_notices: Vec<(String, String)> = key_errors
-            .into_iter()
-            .map(|e| {
-                tracing::error!("keybindings: {e}");
-                ("Keyboard shortcuts not loaded".to_string(), format!("{e}\nThe default shortcuts are in effect."))
-            })
-            .collect();
+        for e in key_errors {
+            tracing::error!("keybindings: {e}");
+            startup_notices.push(("Keyboard shortcuts not loaded".to_string(), format!("{e}\nThe default shortcuts are in effect.")));
+        }
         tracing::info!("{} keyboard shortcuts", keys.bindings.len());
         let bg = Background::new(&lh);
         let wm = Wm::new(&theme);
-        let shell = Shell::new(&theme);
+        let mut shell = Shell::new(&theme);
+        shell.layout_label = layouts.indicator().map(String::from);
         let render = RenderState::new(&theme);
 
         Lumen {
@@ -243,6 +280,11 @@ impl Lumen {
             cursor_theme: CursorTheme::load(),
             pointer_pos: (0.0, 0.0).into(),
             suppressed_keys: Vec::new(),
+            mod_chord: None,
+            release_action: None,
+            key_repeat: None,
+            input_cfg,
+            layouts,
             outputs: Vec::new(),
             wm,
             shell,
@@ -253,6 +295,12 @@ impl Lumen {
             bg,
             startup_notices,
             wpctl_missing: false,
+            volume_jobs: JobQueue::default(),
+            brightness_jobs: JobQueue::default(),
+            backlight_reported: false,
+            battery_warned: Default::default(),
+            lid_closed: false,
+            last_suspend: None,
         }
     }
 

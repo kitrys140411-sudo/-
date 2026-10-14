@@ -49,8 +49,10 @@ impl HeadlessData {
         let target: GlesTexture = renderer
             .create_buffer(Fourcc::Abgr8888, size.to_logical(1).to_buffer(1, Transform::Normal))
             .map_err(|e| format!("offscreen buffer: {e:?}"))?;
+        // Tests name it like a laptop panel (eDP-1) to exercise the lid logic.
+        let name = std::env::var("LUMEN_OUTPUT_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "HEADLESS-1".into());
         let output = Output::new(
-            "HEADLESS-1".into(),
+            name,
             PhysicalProperties { size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "Lumen".into(), model: "Headless".into() },
         );
         let mode = Mode { size, refresh: 60_000 };

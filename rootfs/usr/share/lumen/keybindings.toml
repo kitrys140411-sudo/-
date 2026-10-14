@@ -18,13 +18,19 @@
 #
 # Chords are modifiers (Super, Ctrl, Alt, Shift) and a key joined by "+": a letter
 # or digit, a symbol ("Super+/"), or an xkb key name such as Return, Escape,
-# Page_Up, Left, F1, Print, XF86AudioRaiseVolume. Letters ignore case.
+# Page_Up, Left, F1, Print, XF86AudioRaiseVolume. Letters ignore case, and keys
+# are found in every keyboard layout (Super+T also works while typing Russian).
+# Two or more modifiers alone ("Alt+Shift") fire when they are released without
+# any other key pressed in between.
 #
 # Actions: spawn, overview, app-grid, shortcuts, close-window, maximize, restore,
 # tile-left, tile-right, fullscreen, switcher, switcher-reverse, workspace-1..4,
 # workspace-left, workspace-right, move-to-workspace-1..4, move-to-workspace-left,
-# move-to-workspace-right, screenshot, volume-up, volume-down, volume-mute, hud,
-# quit-session, none.
+# move-to-workspace-right, screenshot, volume-up, volume-down, volume-mute,
+# brightness-up, brightness-down, switch-layout, switch-layout-backward, suspend,
+# hud, quit-session, none.
+#
+# Keyboard layouts themselves are set in input.toml (next to this file).
 #
 # Not configurable: tapping Super opens the overview, Super+drag moves a window
 # (Super+right-drag resizes it), Ctrl+Alt+F1..F12 switch to a text console.
@@ -57,6 +63,13 @@ keys    = "Super+C"
 action  = "spawn"
 command = "lumen-claude"
 label   = "Claude Code"
+group   = "Apps"
+
+[[bind]]
+keys    = "Super+G"
+action  = "spawn"
+command = "lumen-steam"
+label   = "Steam"
 group   = "Apps"
 
 [[bind]]
@@ -260,6 +273,36 @@ group  = "System"
 keys   = "XF86AudioMute"
 action = "volume-mute"
 label  = "Mute"
+group  = "System"
+
+[[bind]]
+keys   = "XF86MonBrightnessUp"
+action = "brightness-up"
+label  = "Brightness up"
+group  = "System"
+
+[[bind]]
+keys   = "XF86MonBrightnessDown"
+action = "brightness-down"
+label  = "Brightness down"
+group  = "System"
+
+[[bind]]
+keys   = ["Super+Space", "Alt+Shift"]
+action = "switch-layout"
+label  = "Switch keyboard layout"
+group  = "System"
+
+[[bind]]
+keys   = "Super+Shift+Space"
+action = "switch-layout-backward"
+label  = "Previous keyboard layout"
+group  = "System"
+
+[[bind]]
+keys   = "XF86Sleep"
+action = "suspend"
+label  = "Suspend"
 group  = "System"
 
 [[bind]]

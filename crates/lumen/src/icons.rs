@@ -1,9 +1,10 @@
-//! The shell's icons, drawn from vector paths (no icon theme in the image).
-//! Application icons are rounded squares ("squircles") with a glyph; apps
-//! without a known icon get a tinted tile with their initial. All art is
+//! The shell's icons, drawn from vector paths. Application icons are
+//! rounded squares ("squircles") with a glyph; other apps get the PNG icon
+//! they installed into the hicolor theme ([`crate::icontheme`], looked up off
+//! the main loop), else a tinted tile with their initial. All art is
 //! original (no third-party logos).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use lumen_text::{Library, Path};
@@ -74,13 +75,16 @@ pub fn canonical(name: &str) -> Option<&'static str> {
         "image-viewer" | "lumen-view" => "image-viewer",
         "multimedia-video-player" | "mpv" | "io.mpv.Mpv" => "multimedia-video-player",
         "input-keyboard" => "input-keyboard",
+        "applications-games" | "steam" | "com.valvesoftware.Steam" | "lumen-steam" => "applications-games",
         _ => return None,
     })
 }
 
 /// Glyph-only icons of the shell itself (no app tile).
-const SHELL_ICONS: [&str; 8] =
-    ["app-grid", "power", "search", "close", "audio-volume-high", "audio-volume-medium", "audio-volume-low", "audio-volume-muted"];
+const SHELL_ICONS: [&str; 10] = [
+    "app-grid", "power", "search", "close", "audio-volume-high", "audio-volume-medium", "audio-volume-low", "audio-volume-muted",
+    "display-brightness", "battery-charging",
+];
 
 /// Every icon drawn from vector art (not a letter tile).
 pub fn is_known(name: &str) -> bool {
@@ -322,6 +326,53 @@ pub fn draw(lib: &Rc<Library>, name: &str, px: u32, letter: Option<&lumen_text::
             });
             c.fill_even_odd(&body, white);
         }
+        "applications-games" => {
+            // A game controller: D-pad, two buttons, two grips.
+            tile(&mut c, lib, [0.22, 0.29, 0.50], [0.09, 0.12, 0.25]);
+            let body = c.path(|p, s| {
+                p.rounded_rect(8.0 * s, 15.5 * s, 32.0 * s, 15.0 * s, 7.5 * s, false);
+                p.circle(14.5 * s, 29.0 * s, 6.0 * s, false);
+                p.circle(33.5 * s, 29.0 * s, 6.0 * s, false);
+            });
+            c.shadow(&body, 0.0, 0.8, 1.2, 0.25);
+            c.fill(&body, white);
+            let dpad = c.path(|p, s| {
+                p.rounded_rect(11.0 * s, 21.7 * s, 9.0 * s, 2.6 * s, 0.8 * s, false);
+                p.rounded_rect(14.2 * s, 18.5 * s, 2.6 * s, 9.0 * s, 0.8 * s, false);
+            });
+            c.fill(&dpad, [0.13, 0.17, 0.32, 1.0]);
+            let a = c.path(|p, s| {
+                p.circle(34.0 * s, 25.5 * s, 2.0 * s, false);
+            });
+            c.fill(&a, [0.36, 0.78, 0.98, 1.0]);
+            let b = c.path(|p, s| {
+                p.circle(30.0 * s, 21.0 * s, 2.0 * s, false);
+            });
+            c.fill(&b, [1.0, 0.45, 0.55, 1.0]);
+        }
+        "display-brightness" => {
+            // A sun: a disc and eight rays.
+            let disc = c.path(|p, s| {
+                p.circle(24.0 * s, 24.0 * s, 6.5 * s, false);
+            });
+            c.fill(&disc, light);
+            let rays = c.path(|p, s| {
+                for i in 0..8 {
+                    let a = (i as f32 * 45.0).to_radians();
+                    let (dx, dy) = (a.cos(), a.sin());
+                    p.move_to((24.0 + dx * 11.0) * s, (24.0 + dy * 11.0) * s).line_to((24.0 + dx * 15.5) * s, (24.0 + dy * 15.5) * s);
+                }
+            });
+            c.stroke(&rays, 3.0, false, light);
+        }
+        "battery-charging" => {
+            let bolt = c.path(|p, s| {
+                polyline(p, &[(27.0, 6.0), (13.0, 27.0), (23.0, 27.0), (20.0, 42.0), (35.0, 20.0), (25.0, 20.0)], s);
+                p.close();
+            });
+            c.fill(&bolt, light);
+            c.stroke(&bolt, 1.2, true, light);
+        }
         "app-grid" => {
             tile(&mut c, lib, [0.27, 0.28, 0.34], [0.19, 0.20, 0.25]);
             let dots = c.path(|p, s| {
@@ -411,10 +462,26 @@ pub fn draw(lib: &Rc<Library>, name: &str, px: u32, letter: Option<&lumen_text::
 }
 
 /// Icons are drawn once per (name, pixel size) and kept as textures.
+///
+/// Names without vector art are first drawn as letter tiles and looked up in
+/// the installed icon themes in the background: [`IconCache::take_requests`]
+/// hands the lookups to the caller, [`IconCache::arrived`] takes the result,
+/// and the next [`IconCache::get`] replaces the tile with the image.
 #[derive(Default)]
 pub struct IconCache {
     lib: Option<Rc<Library>>,
     map: HashMap<(String, u32), Image>,
+    /// Letter tiles standing in while a themed image is looked up.
+    provisional: HashSet<(String, u32)>,
+    /// Lookups to start (name, pixel size).
+    requests: Vec<(String, u32)>,
+    /// Lookup results (premultiplied RGBA, None: not found) not yet uploaded.
+    results: HashMap<(String, u32), Option<Vec<u8>>>,
+}
+
+/// Names that are worth looking for in icon themes (not our own letter keys).
+fn themable(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with("letter-") && !is_known(name)
 }
 
 impl IconCache {
@@ -428,15 +495,56 @@ impl IconCache {
         if self.lib.is_none() {
             self.lib = Library::new().ok();
         }
-        let lib = self.lib.as_ref()?;
         let key = (name.to_string(), px);
+        if let Some(found) = self.results.remove(&key) {
+            self.provisional.remove(&key);
+            if let Some(data) = found {
+                match Image::upload(r, &data, px, px) {
+                    Ok(img) => {
+                        self.map.insert(key.clone(), img);
+                    }
+                    Err(e) => tracing::warn!("icon {name}: {e:?}"),
+                }
+            }
+        }
         if !self.map.contains_key(&key) {
+            let lib = self.lib.as_ref()?;
             let letter = if is_known(name) { None } else { letter() };
             let data = draw(lib, name, px, letter.as_ref());
             let img = Image::upload(r, &data, px, px).ok()?;
             self.map.insert(key.clone(), img);
+            if themable(name) {
+                self.provisional.insert(key.clone());
+                self.requests.push(key.clone());
+            }
         }
         self.map.get_mut(&key)
+    }
+
+    /// Themed lookups to run (off the main loop), each once.
+    pub fn take_requests(&mut self) -> Vec<(String, u32)> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// The result of a themed lookup.
+    pub fn arrived(&mut self, name: String, px: u32, data: Option<Vec<u8>>) {
+        if self.provisional.contains(&(name.clone(), px)) {
+            self.results.insert((name, px), data);
+        }
+    }
+
+    /// Forget every themed or letter icon (apps were installed or removed:
+    /// their icons are looked up again on next use).
+    pub fn forget_themed(&mut self) {
+        self.map.retain(|(n, _), _| !themable(n));
+        self.provisional.clear();
+        self.results.clear();
+        self.requests.clear();
+    }
+
+    /// How many icons still wait for their themed image (tests, IPC).
+    pub fn pending(&self) -> usize {
+        self.provisional.len()
     }
 }
 
@@ -445,9 +553,10 @@ mod tests {
     use super::*;
 
     /// Every icon the shared desktop-entry contract names.
-    const APP_ICONS: [&str; 12] = [
+    const APP_ICONS: [&str; 13] = [
         "utilities-terminal", "web-browser", "youtube", "claude-code", "system-file-manager", "text-editor", "preferences-system",
         "accessories-calculator", "utilities-system-monitor", "image-viewer", "multimedia-video-player", "input-keyboard",
+        "applications-games",
     ];
 
     #[test]
@@ -456,7 +565,10 @@ mod tests {
         assert_eq!(canonical("mpv"), Some("multimedia-video-player"));
         assert_eq!(canonical("lumen-term"), Some("utilities-terminal"));
         assert_eq!(canonical("lumen-files"), Some("system-file-manager"));
+        assert_eq!(canonical("steam"), Some("applications-games"));
+        assert_eq!(canonical("com.valvesoftware.Steam"), Some("applications-games"));
         assert_eq!(canonical("nope"), None);
+        assert!(themable("org.gimp.GIMP") && !themable("steam") && !themable("letter-a") && !themable("power"));
         for n in APP_ICONS {
             assert_eq!(canonical(n), Some(n));
         }
@@ -478,7 +590,10 @@ mod tests {
     #[test]
     fn icons_have_ink() {
         let lib = Library::new().unwrap();
-        let names = ["terminal", "app-grid", "power", "search", "close", "some-app", "audio-volume-high", "audio-volume-muted"];
+        let names = [
+            "terminal", "app-grid", "power", "search", "close", "some-app", "audio-volume-high", "audio-volume-muted", "display-brightness",
+            "battery-charging",
+        ];
         for name in names.into_iter().chain(APP_ICONS) {
             let d = draw(&lib, name, 48, None);
             let ink = d.chunks_exact(4).filter(|p| p[3] > 128).count();
@@ -500,8 +615,9 @@ mod sheet {
             "nesw-resize", "not-allowed", "wait", "progress"];
         let icons = [
             "utilities-terminal", "web-browser", "youtube", "claude-code", "system-file-manager", "text-editor", "preferences-system",
-            "accessories-calculator", "utilities-system-monitor", "image-viewer", "multimedia-video-player", "input-keyboard", "app-grid",
-            "power", "search", "close", "audio-volume-high", "audio-volume-medium", "audio-volume-low", "audio-volume-muted", "some-app",
+            "accessories-calculator", "utilities-system-monitor", "image-viewer", "multimedia-video-player", "input-keyboard",
+            "applications-games", "app-grid", "power", "search", "close", "audio-volume-high", "audio-volume-medium", "audio-volume-low",
+            "audio-volume-muted", "display-brightness", "battery-charging", "some-app",
         ];
         let cell = 72u32;
         let (w, h) = (cell * cursors.len().max(icons.len()) as u32, cell * 4);

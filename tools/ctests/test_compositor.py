@@ -187,10 +187,11 @@ def test_close_animates_and_removes(t):
     client, w = c.map_window("bye", "--size", "400x300", "--color", "#c0a020")
     c.action("close")
     client.wait_line(r"^closed")
-    # The window fades out from a snapshot even though the client is gone.
+    # The client prints "closed" before it disconnects: wait until the window
+    # is gone. It then fades out from a snapshot (for ~0.3 s).
+    c.wait(lambda: c.window("bye") is None, 5, "window destroyed")
     t.check(c.stats()["animating"], "no closing animation")
     c.settle()
-    t.check(c.window("bye") is None, "window still listed")
     img = c.screenshot("after-close")
     p = img.mean(int(w["x"]) + 100, int(w["y"]) + 100, int(w["x"]) + 300, int(w["y"]) + 200)
     t.check(not (p[0] > 150 and p[1] > 120 and p[2] < 80), f"window still visible: {p}")

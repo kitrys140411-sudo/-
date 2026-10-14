@@ -1,0 +1,48 @@
+# Lumen input settings: keyboard layouts, touchpads and mice.
+#
+# These are the defaults. To change them, create ~/.config/lumen/input.toml with
+# only the values you want to change (same sections and names), then run
+# `lumenctl desktop reload-input` (or log in again). A file with an error is
+# ignored as a whole and the problem is shown as a notification.
+
+[keyboard]
+# xkb layouts (us, gb, ru, ua, de, fr, ...), switched with Super+Space or
+# Alt+Shift (the switch-layout shortcuts in keybindings.toml). The first one is
+# the default and the one shortcuts are matched in first.
+layouts = ["us", "ru"]
+# One xkb variant per layout, "" for the standard one, e.g. ["", "phonetic"].
+variants = []
+# xkb options, e.g. ["caps:escape", "compose:ralt"]. The "grp:" options switch
+# layouts inside xkb; do not combine them with the switch-layout shortcuts.
+options = []
+# The panel's layout indicator, one label per layout; when empty, labels come
+# from the layouts (us -> EN, ru -> RU, ua -> UK, ...).
+labels = []
+# Remember the layout of each window; a window seen for the first time starts
+# with the first layout.
+per_window = false
+# Key repeat: delay before a held key repeats (ms) and repeats per second (0: off).
+repeat_delay = 400
+repeat_rate = 30
+
+[touchpad]
+tap_to_click = true
+# Content follows the fingers, like on a phone.
+natural_scroll = true
+# Pointer speed from -1 (slowest) to 1 (fastest).
+speed = 0.0
+disable_while_typing = true
+# "default" (what the touchpad is made for), "clickfinger" (one/two/three
+# fingers click left/right/middle) or "areas" (the bottom right is the right button).
+click_method = "default"
+left_handed = false
+
+[mouse]
+natural_scroll = false
+# Pointer speed from -1 (slowest) to 1 (fastest).
+speed = 0.0
+# "adaptive" (faster movements go further) or "flat" (no acceleration: the
+# same hand movement always moves the pointer the same distance, as many
+# games expect).
+accel_profile = "adaptive"
+left_handed = false

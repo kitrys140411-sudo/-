@@ -216,6 +216,10 @@ impl Lumen {
                 kb.set_focus(self, None, serial);
             } else {
                 kb.set_focus(self, surface, serial);
+                // Per-window keyboard layouts follow the focus.
+                if let Some(id) = id {
+                    self.restore_window_layout(id);
+                }
             }
         }
         if changed {
@@ -371,6 +375,7 @@ impl XdgShellHandler for Lumen {
         }
         let was_focused = self.wm.focused == Some(id);
         self.wm.remove(id);
+        self.layouts.forget(id);
         if was_focused {
             let next = self.wm.mru.iter().copied().find(|i| self.wm.get(*i).is_some_and(|w| w.mapped && w.ws == self.wm.current));
             self.focus_window(next);
@@ -451,6 +456,10 @@ impl SeatHandler for Lumen {
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
         self.queue_redraw_all();
+    }
+
+    fn led_state_changed(&mut self, _seat: &Seat<Self>, led_state: smithay::input::keyboard::LedState) {
+        self.backend.update_leds(led_state);
     }
 }
 
