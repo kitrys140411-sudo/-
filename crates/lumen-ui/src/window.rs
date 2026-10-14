@@ -395,6 +395,8 @@ impl Runtime {
             if animating {
                 self.schedule_wake(now + Duration::from_millis(16));
             }
+            // The burst may end with a frame that changed nothing.
+            self.report_perf(animating);
             self.after_frame(now);
             return;
         };
@@ -420,26 +422,31 @@ impl Runtime {
         self.perf.0 += 1;
         self.perf.1 += cpu;
         self.perf.2 = self.perf.2.max(cpu);
-        // Test builds report frame times every 120 frames and at the end of
-        // each burst of animation, with the textures uploaded meanwhile.
-        if self.ui.test.enabled() && (self.perf.0 >= 120 || (!animating && self.perf.0 >= 10)) {
-            let r = self.renderer.as_ref().unwrap();
-            let uploads = r.atlas.uploads + r.texture_uploads;
-            self.ui.log(&format!(
-                "perf frames={} avg_ms={:.2} max_ms={:.2} uploads={}",
-                self.perf.0,
-                self.perf.1 / self.perf.0 as f32,
-                self.perf.2,
-                uploads - self.perf_uploads
-            ));
-            self.perf = (0, 0.0, 0.0);
-            self.perf_uploads = uploads;
-        }
+        self.report_perf(animating);
         if !self.ready_logged {
             self.ready_logged = true;
             self.ui.log(&format!("ready {}x{}", self.size.0, self.size.1));
         }
         self.after_frame(now);
+    }
+
+    /// Test builds report frame times every 120 presented frames and at the
+    /// end of each burst of activity, with the textures uploaded meanwhile.
+    fn report_perf(&mut self, animating: bool) {
+        if !self.ui.test.enabled() || self.perf.0 == 0 || (self.perf.0 < 120 && animating) {
+            return;
+        }
+        let r = self.renderer.as_ref().unwrap();
+        let uploads = r.atlas.uploads + r.texture_uploads;
+        self.ui.log(&format!(
+            "perf frames={} avg_ms={:.2} max_ms={:.2} uploads={}",
+            self.perf.0,
+            self.perf.1 / self.perf.0 as f32,
+            self.perf.2,
+            uploads - self.perf_uploads
+        ));
+        self.perf = (0, 0.0, 0.0);
+        self.perf_uploads = uploads;
     }
 
     fn after_frame(&mut self, now: Instant) {

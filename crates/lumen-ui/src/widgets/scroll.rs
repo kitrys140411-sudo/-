@@ -13,6 +13,9 @@ use crate::layout::{Align, Layout, Size, Sizing};
 use crate::tree::{Node, Sense};
 use crate::ui::Ui;
 
+/// Seconds the scrollbars stay after the content last moved.
+const BAR_SHOWN: f32 = 1.0;
+
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Motion {
     #[default]
@@ -284,11 +287,12 @@ fn scroll_logic(ui: &mut Ui, id: Id, ax: bool, ay: bool) -> (Vec2, Viewport) {
     if moving {
         ui.request_repaint();
     }
-    // Keep the bars while they fade out.
+    // The bars start fading out a second after the last movement (see
+    // `scrollbars`): one wake-up then, the fade animates by itself.
     if let Some(a) = activity {
         let since = now.duration_since(a).as_secs_f32();
-        if since < 1.6 {
-            ui.request_repaint_after(std::time::Duration::from_millis(50));
+        if since < BAR_SHOWN {
+            ui.request_repaint_after(std::time::Duration::from_secs_f32(BAR_SHOWN - since + 0.005));
         }
     }
     if view.is_none() {
@@ -360,7 +364,7 @@ fn scrollbars(ui: &mut Ui, id: Id, ax: bool, ay: bool) {
         if r.drag_released || (!r.dragging && dragging.is_some() && ui.press_pos(bar_id).is_none() && !r.pressed) {
             ui.state::<ScrollState>(id).bar_drag = None;
         }
-        let recent = activity.is_some_and(|a| now.duration_since(a).as_secs_f32() < 1.0);
+        let recent = activity.is_some_and(|a| now.duration_since(a).as_secs_f32() < BAR_SHOWN);
         let visible = recent || r.hovered || r.dragging || r.pressed;
         let alpha = ui.animate(bar_id.with("a"), if visible { 1.0 } else { 0.0 }, SpringParams::GENTLE);
         let wide = ui.animate_bool(bar_id.with("w"), r.hovered || r.dragging);

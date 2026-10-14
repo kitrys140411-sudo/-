@@ -371,6 +371,36 @@ class UiApp:
     def focused(self):
         return next((w for w in self.widgets() if w["focused"]), None)
 
+    def settle(self, quiet=0.3, timeout=10):
+        """Wait until the app's widgets stop moving (scrolling, opening
+        menus...) for `quiet` seconds; endless animations such as spinners
+        do not count, the compositor's own `settle` is separate."""
+        last, since = None, time.time()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            cur = self.map()["widgets"]
+            if cur != last:
+                last, since = cur, time.time()
+            elif time.time() - since >= quiet:
+                return
+            time.sleep(0.03)
+        raise AssertionError(f"{self.app_id} widgets never settled")
+
+    def idle(self, quiet=0.5, timeout=10):
+        """Wait until the app stops rendering (its frame counter stays put
+        for `quiet` seconds)."""
+        last, since = None, time.time()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            m = self.map()
+            cur = (m["frames"], m["renders"])
+            if cur != last:
+                last, since = cur, time.time()
+            elif time.time() - since >= quiet:
+                return cur
+            time.sleep(0.03)
+        raise AssertionError(f"{self.app_id} never went idle")
+
     # -- input -----------------------------------------------------------------------
     def point(self, w, fx=0.5, fy=0.5):
         """Screen position of a point of widget `w` (fractions of its box)."""

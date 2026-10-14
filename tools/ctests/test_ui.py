@@ -58,7 +58,8 @@ def test_buttons_inputs_and_toggles(t):
     g.scroll("Toggles", 600)
     g.widget("spinner")
     c.wait(lambda: g.find("volume", "slider") and g.find("volume", "slider")["y"] + 30 < g.map()["size"][1], 10, "slider in view")
-    c.settle()
+    # The spinner keeps the window drawing; wait for the scrolling to end.
+    g.settle()
     # The slider follows a click on its track.
     s = g.widget("volume", "slider")
     x, y = g.point(s, 0.9)
@@ -104,13 +105,14 @@ def test_scroll_select_and_context_menu(t):
     g.widget("Item 0")
     t.check(g.find("Item 40") is None, "only the visible rows are built")
     # Wheel scrolling (smooth): the first rows leave, later ones arrive.
+    # `scroll 150` is ten wheel notches (56 px each): ~38 rows of 44 px.
     x, y = g.point(g.widgets("list")[0])
     c.pointer(x, y)
-    for _ in range(6):
+    for _ in range(3):
         c.ipc("scroll 150")
         time.sleep(0.05)
     c.wait(lambda: g.find("Item 0") is None and g.find("Item 40") is not None, 10, "list scrolled")
-    c.settle()
+    g.settle()
     c.screenshot("scrolled")
     # Select a row, extend with Shift+Down.
     m = g.mark()
@@ -279,21 +281,26 @@ def test_live_graph_then_idle(t):
 def test_frame_times_and_uploads(t):
     c, g = start(t, "--page", "lists")
     # Scroll down and back so every glyph on the way is in the atlas, then
-    # again: the second pass must upload nothing.
+    # again: the second pass must upload nothing. Each pass ends idle, so
+    # its perf lines cover exactly its own frames.
     x, y = g.point(g.widgets("list")[0])
     c.pointer(x, y)
+    g.idle()
     for rnd in range(2):
         m = g.mark()
-        for dy in [150] * 8 + [-150] * 8:
+        for dy in [150] * 6 + [-150] * 6:
             c.ipc(f"scroll {dy}")
             time.sleep(0.05)
-        c.settle()
-        g.wait_log(r"^perf ", m)
-        time.sleep(0.6)
+        g.idle(quiet=0.6, timeout=20)
         perf = [ln for ln in g.lines(m) if ln.startswith("perf ")]
         t.log(f"round {rnd}: {perf}")
     t.check(perf, "perf lines were logged")
-    fields = dict(kv.split("=") for kv in perf[-1].split()[1:])
-    t.check(int(fields["uploads"]) == 0, f"scrolling over known text uploads no textures: {perf[-1]}")
+    stats = [dict(kv.split("=") for kv in ln.split()[1:]) for ln in perf]
+    uploads = sum(int(s["uploads"]) for s in stats)
+    t.check(uploads == 0, f"scrolling over known text uploads no textures: {perf}")
+    frames = sum(int(s["frames"]) for s in stats)
+    avg = sum(float(s["avg_ms"]) * int(s["frames"]) for s in stats) / frames
+    t.log(f"{frames} frames, average {avg:.2f} ms")
+    t.check(frames >= 20, f"scrolling animates smoothly: {frames} frames")
     limit = 40.0 if PROFILE == "debug" else 8.0
-    t.check(float(fields["avg_ms"]) < limit, f"average frame {fields['avg_ms']} ms ({PROFILE})")
+    t.check(avg < limit, f"average frame {avg:.2f} ms ({PROFILE})")
