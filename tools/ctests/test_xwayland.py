@@ -4,6 +4,7 @@ X11 clients are `lumen-testclient --x11` (scriptable, prints the X events it
 gets), xterm and xclip; tools such as xwininfo and xdotool look at the X side.
 """
 import json
+import os
 import re
 import subprocess
 import time
@@ -47,11 +48,14 @@ def test_xwayland_starts_after_first_frame(t):
     out = subprocess.run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK", "_NET_SUPPORTED"], env=env,
                          capture_output=True, text=True, timeout=10).stdout
     t.check("_NET_WM_STATE_FULLSCREEN" in out and "window id" in out, out)
-    # Apps the compositor starts get DISPLAY.
-    log = f"{c.workdir}/display.txt"
-    c.ipc(f"spawn sh -c 'echo $DISPLAY > {log}'")
-    c.wait(lambda: open(log).read().strip() == x["display"] if __import__("os").path.exists(log) else False, 10,
-           "DISPLAY in spawned app")
+    # Apps the compositor starts get DISPLAY (the control socket splits a
+    # spawn command at spaces, so the shell code goes in a script).
+    log, script = f"{c.workdir}/display.txt", f"{c.workdir}/display.sh"
+    with open(script, "w") as f:
+        f.write(f'echo "$DISPLAY" > {log}.tmp && mv {log}.tmp {log}\n')
+    c.ipc(f"spawn sh {script}")
+    c.wait(lambda: os.path.exists(log), 10, "spawned app")
+    t.check(open(log).read().strip() == x["display"], f"DISPLAY in spawned app: {open(log).read()!r}")
 
 
 def test_x11_window_managed_like_wayland(t):
@@ -190,7 +194,7 @@ def test_x11_override_redirect_menu(t):
 
 def test_x11_transient_dialog(t):
     c = t.compositor()
-    cl = x11_client(c, "--title", "XParent", "--dialog", "--size", "640x400", name="parent")
+    cl = x11_client(c, "--title", "XParent", "--dialog", "--size", "640x400", "--color", "#2050d0", name="parent")
     cl.wait_line(r"^dialog event=mapped")
     c.wait(lambda: (c.window("XParent dialog") or {}).get("mapped"), 10, "dialog")
     c.settle()
@@ -204,13 +208,11 @@ def test_x11_transient_dialog(t):
     c.wait(lambda: c.window("XParent")["focused"], 5, "parent focused")
     order = [w["title"] for w in c.windows()]
     t.check(order.index("XParent dialog") > order.index("XParent"), order)
+    # The dialog (red channel lifted by the client) is drawn over its parent.
     img = c.screenshot("dialog")
     q = img.pixel(int(d["x"] + d["w"] / 2), int(d["y"] + d["h"] / 2))
-    t.check(abs(q[0] - p_color(c, img, p)[0]) > 20 or True, q)
-
-
-def p_color(c, img, w):
-    return img.pixel(int(w["x"] + 20), int(w["y"] + 60))
+    pc = img.pixel(int(p["x"] + 20), int(p["y"] + 60))
+    t.check(q[0] > pc[0] + 40 and abs(q[2] - pc[2]) < 30, f"dialog {q} over parent {pc}")
 
 
 def test_clipboard_x11_to_wayland(t):
@@ -259,7 +261,7 @@ def test_xterm(t):
         t.check(w["x11"] and w["focused"] and w["app_id"] == "XTerm", w)
         c.type("hello\n")
         c.wait(lambda: open(f"{c.workdir}/typed.txt").read().strip() == "hello"
-               if __import__("os").path.exists(f"{c.workdir}/typed.txt") else False, 10, "typed text in xterm")
+               if os.path.exists(f"{c.workdir}/typed.txt") else False, 10, "typed text in xterm")
         c.wait(lambda: c.window("xterm-test") is None, 10, "xterm closed after its command")
         t.check(p.wait(5) == 0, "xterm exit status")
     finally:

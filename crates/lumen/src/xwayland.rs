@@ -72,6 +72,18 @@ pub struct XwaylandState {
     pub failures: u32,
     pub enabled: bool,
     pub error: Option<String>,
+    /// Mime types of the clipboard and primary selection a Wayland client
+    /// set last (None: X or nobody owns it), handed to a window manager
+    /// that attaches later (Xwayland starting, or restarted).
+    pub wl_selection: [Option<Vec<String>>; 2],
+}
+
+/// Index into [`XwaylandState::wl_selection`].
+pub fn selection_index(ty: SelectionTarget) -> usize {
+    match ty {
+        SelectionTarget::Clipboard => 0,
+        SelectionTarget::Primary => 1,
+    }
 }
 
 impl XwaylandState {
@@ -90,6 +102,7 @@ impl XwaylandState {
             failures: 0,
             enabled,
             error: None,
+            wl_selection: [None, None],
         }
     }
 
@@ -199,6 +212,13 @@ impl Lumen {
         if let Err(e) = wm.set_randr_primary_output(self.primary_output()) {
             tracing::debug!("X11 primary output: {e:?}");
         }
+        for ty in [SelectionTarget::Clipboard, SelectionTarget::Primary] {
+            if let Some(mime_types) = self.xwayland.wl_selection[selection_index(ty)].clone() {
+                if let Err(e) = wm.new_selection(ty, Some(mime_types)) {
+                    tracing::debug!(?ty, "cannot pass the selection to X11: {e}");
+                }
+            }
+        }
         let x = &mut self.xwayland;
         x.wm = Some(wm);
         x.ready = true;
@@ -251,7 +271,10 @@ impl Lumen {
     pub fn x11_restack(&mut self) {
         let Some(wm) = self.xwayland.wm.as_mut() else { return };
         let order: Vec<X11Surface> = self.wm.windows.iter().filter_map(|w| w.x11().cloned()).filter(|x| x.alive()).collect();
-        if let Err(e) = wm.update_stacking_order_downwards(order.iter()) {
+        // Our list is bottom to top. smithay's "upwards" variant is the one
+        // that takes that order (it moves each window above the previous
+        // one); despite its documentation, "downwards" expects top to bottom.
+        if let Err(e) = wm.update_stacking_order_upwards(order.iter()) {
             tracing::debug!("X11 restack: {e}");
         }
     }
@@ -514,6 +537,7 @@ impl XwmHandler for Lumen {
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
         tracing::debug!(?selection, ?mime_types, "X11 selection");
+        self.xwayland.wl_selection[selection_index(selection)] = None;
         match selection {
             SelectionTarget::Clipboard => set_data_device_selection(&self.dh, &self.seat, mime_types, ()),
             SelectionTarget::Primary => set_primary_selection(&self.dh, &self.seat, mime_types, ()),

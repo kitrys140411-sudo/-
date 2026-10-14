@@ -144,7 +144,12 @@ impl Lumen {
             return;
         }
         use smithay::xwayland::xwm::WmWindowType as T;
-        let takes_focus = !matches!(w.x11().and_then(|x| x.window_type()), Some(T::Tooltip | T::Notification | T::Splash));
+        let mut takes_focus = !matches!(w.x11().and_then(|x| x.window_type()), Some(T::Tooltip | T::Notification | T::Splash));
+        // A dialog may be shown before its parent (both mapped at startup,
+        // the dialog's first buffer came first): it keeps the focus.
+        if self.wm.focused.is_some_and(|f| self.wm.parent_of(f) == Some(id)) {
+            takes_focus = false;
+        }
         let work = self.work_area();
         self.wm.map(id, work);
         if takes_focus {
@@ -522,8 +527,10 @@ impl SelectionHandler for Lumen {
     /// A Wayland client set a selection: X clients see it through the X11
     /// window manager, which becomes the X selection owner.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        let mime_types = source.map(|s| s.mime_types());
+        self.xwayland.wl_selection[crate::xwayland::selection_index(ty)] = mime_types.clone();
         if let Some(wm) = self.xwayland.wm.as_mut() {
-            if let Err(e) = wm.new_selection(ty, source.map(|s| s.mime_types())) {
+            if let Err(e) = wm.new_selection(ty, mime_types) {
                 tracing::warn!(?ty, "cannot pass the selection to X11: {e}");
             }
         }
