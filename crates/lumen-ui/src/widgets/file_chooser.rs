@@ -546,7 +546,7 @@ impl FileChooser {
         // Places | files.
         let mut list_id = None;
         Frame::row().fill_width().height(Size::Px(body_h)).show(ui, |ui| {
-            Frame::column().width(Size::Px(184.0)).height(Size::FILL).gap(2.0).padding((0.0, 0.0, 10.0, 0.0)).show(ui, |ui| {
+            Frame::column().width(Size::Px(184.0)).height(Size::FILL).gap(2.0).padding((0.0, 10.0, 0.0, 0.0)).show(ui, |ui| {
                 let places = self.places.clone();
                 for p in places {
                     if ui.nav_item(Some(p.icon), &p.name, p.path == self.dir).clicked {
@@ -570,7 +570,7 @@ impl FileChooser {
                     }
                 }
                 if let Some(m) = self.message.clone() {
-                    Frame::column().fill_width().padding((8.0, 8.0, 8.0, 0.0)).show(ui, |ui| {
+                    Frame::column().fill_width().padding((8.0, 8.0, 0.0, 8.0)).show(ui, |ui| {
                         if ui.infobar(Severity::Error, &m, Some("Dismiss")).clicked {
                             self.message = None;
                         }

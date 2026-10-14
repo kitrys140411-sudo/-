@@ -158,6 +158,8 @@ impl Insets {
         Insets { left: horizontal, top: vertical, right: horizontal, bottom: vertical }
     }
 
+    /// Each side by name. (Tuples convert in the CSS order instead: see
+    /// the `From` implementations.)
     pub const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Insets {
         Insets { left, top, right, bottom }
     }
@@ -185,8 +187,9 @@ impl From<(f32, f32)> for Insets {
 }
 
 impl From<(f32, f32, f32, f32)> for Insets {
-    /// `(left, top, right, bottom)`.
-    fn from((l, t, r, b): (f32, f32, f32, f32)) -> Insets {
+    /// `(top, right, bottom, left)`: the CSS order, clockwise from the top
+    /// (like `(vertical, horizontal)` for two values).
+    fn from((t, r, b, l): (f32, f32, f32, f32)) -> Insets {
         Insets::new(l, t, r, b)
     }
 }
@@ -206,5 +209,11 @@ mod tests {
         assert!(!a.intersect(&Rect::new(20.0, 0.0, 5.0, 5.0)).w.is_nan());
         assert_eq!(a.inset(Insets::symmetric(1.0, 2.0)), Rect::new(2.0, 1.0, 6.0, 8.0));
         assert_eq!(a.centered(4.0, 2.0), Rect::new(3.0, 4.0, 4.0, 2.0));
+    }
+
+    #[test]
+    fn inset_tuples_use_the_css_order() {
+        assert_eq!(Insets::from((1.0, 2.0)), Insets { left: 2.0, top: 1.0, right: 2.0, bottom: 1.0 });
+        assert_eq!(Insets::from((1.0, 2.0, 3.0, 4.0)), Insets { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 });
     }
 }

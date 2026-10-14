@@ -256,6 +256,38 @@ def test_shortcuts_work_in_the_russian_layout(t):
     g.wait_log(r"^chooser cancelled$", m)
 
 
+def test_settings_rows_and_icons(t):
+    c, g = start(t, "--page", "settings")
+    t.check(title(g) == "Gallery — Settings", f"title {title(g)!r}")
+    m = g.mark()
+    # A whole switch row toggles, not just its switch; the networks group
+    # goes away with Wi-Fi.
+    g.widget("Office 5G")
+    g.click("Wi-Fi", "row")
+    g.wait_log(r"^toggle Wi-Fi off$", m)
+    g.wait_gone("Office 5G")
+    g.click("Wi-Fi", "row")
+    g.wait_log(r"^toggle Wi-Fi on$", m)
+    g.widget("Office 5G")
+    g.click("Office 5G", "row")
+    g.widget("Connecting to “Office 5G”…", "toast")
+    g.scroll("Office 5G", 300)  # (the toast at the bottom takes the wheel)
+    g.settle()
+    g.click("keyboard layout", "dropdown")
+    g.click("Russian", "menuitem")
+    g.wait_log(r"^select keyboard layout Russian$", m)
+    g.settle()
+    c.screenshot("settings")
+    # The icon grid: every icon by name; arrows move the selection.
+    g.click("Icons", "nav")
+    c.wait(lambda: title(g) == "Gallery — Icons", 10, "Icons page")
+    g.click("folder")
+    c.key("right")
+    g.wait_log(r"^selection \d+$", m)
+    g.settle()
+    c.screenshot("icons")
+
+
 def test_live_graph_then_idle(t):
     c, g = start(t, "--page", "graphs")
     # Samples arrive from a background thread and wake the window.
