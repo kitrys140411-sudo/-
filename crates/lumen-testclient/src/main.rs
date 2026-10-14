@@ -11,6 +11,7 @@ mod gaming;
 mod handlers;
 mod out;
 mod paint;
+mod primary;
 mod x11;
 
 use std::io::{Read, Write};
@@ -168,6 +169,8 @@ pub(crate) struct App {
     paste_waiting: bool,
     popup: Option<PopupState>,
     gaming: gaming::Gaming,
+    /// `--primary`: the primary selection instead of the clipboard.
+    primary: Option<primary::Primary>,
 }
 
 fn run(opts: Options) -> Result<u8, String> {
@@ -224,6 +227,7 @@ fn run(opts: Options) -> Result<u8, String> {
         }
     };
     let gaming = gaming::Gaming::bind(&globals, &qh, &opts);
+    let primary = if opts.primary { primary::Primary::bind(&globals, &qh) } else { None };
     let window = xdg_shell.create_window(surface, WindowDecorations::ServerDefault, &qh);
     window.set_title(opts.title.clone());
     window.set_app_id(opts.app_id.clone());
@@ -288,6 +292,7 @@ fn run(opts: Options) -> Result<u8, String> {
         paste_waiting: false,
         popup: None,
         gaming,
+        primary,
         exit: None,
         opts,
     };
@@ -755,6 +760,10 @@ impl App {
 
     /// `--copy`: makes our text the clipboard selection (unless we still own it).
     fn offer_selection(&mut self, serial: u32) {
+        if self.opts.primary {
+            self.offer_primary(serial);
+            return;
+        }
         if self.copy_source.is_some() {
             return;
         }
@@ -796,6 +805,13 @@ impl App {
             return;
         }
         self.paste_waiting = false;
+        if self.opts.primary {
+            match self.receive_primary() {
+                Ok(pipe) => self.read_paste(pipe),
+                Err(e) => emit(&format!("paste error={e}")),
+            }
+            return;
+        }
         let Some(device) = self.data_device.as_ref() else {
             emit("paste error=no-data-device");
             return;
@@ -815,6 +831,11 @@ impl App {
                 return;
             }
         };
+        self.read_paste(pipe);
+    }
+
+    /// Prints the pasted text once the source closed the pipe.
+    fn read_paste(&mut self, pipe: sctk::data_device_manager::ReadPipe) {
         let mut data = Vec::new();
         let inserted = self.loop_handle.insert_source(pipe, move |(), file, _app| {
             let mut buf = [0u8; 4096];

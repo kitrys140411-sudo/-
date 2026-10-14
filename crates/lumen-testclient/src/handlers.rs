@@ -246,6 +246,7 @@ impl SeatHandler for App {
                 self.data_device = Some(manager.get_data_device(qh, &seat));
             }
             self.gaming_seat_ready(&seat);
+            self.primary_seat_ready(&seat);
         }
         match capability {
             Capability::Keyboard if self.keyboard.is_none() => {

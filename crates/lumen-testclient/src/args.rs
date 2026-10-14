@@ -92,6 +92,8 @@ pub struct Options {
     /// grab the pointer confined to the window, hide the cursor and warp the
     /// pointer back to the center after every motion.
     pub grab_pointer: bool,
+    /// `--copy` and `--paste` use the primary selection instead of the clipboard.
+    pub primary: bool,
 }
 
 impl Default for Options {
@@ -120,6 +122,7 @@ impl Default for Options {
             inhibit_shortcuts: false,
             opaque: false,
             grab_pointer: false,
+            primary: false,
         }
     }
 }
@@ -146,6 +149,7 @@ usage: lumen-testclient [OPTIONS]
                          ns-resize)
   --copy TEXT            offer TEXT as the clipboard selection on keyboard focus
   --paste                print the clipboard selection on keyboard focus
+  --primary              --copy/--paste use the primary selection instead of the clipboard
   --popup                open an xdg_popup on right click, close it on the next click
   --exit-after-ms N      exit cleanly after N milliseconds
   --close-on-key         exit when Escape is pressed
@@ -250,7 +254,7 @@ where
                 opts.stripes = true;
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
-            | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" => {
+            | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" | "--primary" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -261,6 +265,7 @@ where
                     "--idle-inhibit" => opts.idle_inhibit = true,
                     "--opaque" => opts.opaque = true,
                     "--grab-pointer" => opts.grab_pointer = true,
+                    "--primary" => opts.primary = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -387,6 +392,7 @@ mod tests {
         assert!(o.lock_pointer && o.relative && o.idle_inhibit && o.inhibit_shortcuts);
         assert!(!o.x11 && !o.confine_pointer && !o.opaque);
         assert!(run(&["--opaque"]).unwrap().opaque);
+        assert!(run(&["--paste", "--primary"]).unwrap().primary);
         let o = run(&["--x11", "--dialog", "--popup"]).unwrap();
         assert!(o.x11 && o.dialog && o.popup);
         assert!(run(&["--lock-pointer", "--confine-pointer"]).is_err());

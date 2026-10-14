@@ -247,6 +247,28 @@ def test_clipboard_wayland_to_x11(t):
     w.wait_line(r"^copy event=send")
 
 
+def test_primary_selection_both_ways(t):
+    """Select-to-copy, middle-click paste: the primary selection crosses too."""
+    c = t.compositor()
+    xclip = subprocess.Popen(["xclip", "-quiet", "-selection", "primary", "-i"], env=x11_env(c),
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+    try:
+        xclip.stdin.write("selected in X11")
+        xclip.stdin.close()
+        time.sleep(0.5)
+        paster, _ = c.map_window("ppaster", "--paste", "--primary")
+        paster.wait_line(r"^paste text=selected\\x20in\\x20X11$|^paste text=selected in X11$")
+    finally:
+        xclip.kill()
+        xclip.wait()
+    w, _ = c.map_window("pcopier", "--copy", "from Wayland primary", "--primary")
+    w.wait_line(r"^copy event=offered")
+    cl, _ = map_x11(c, "XPrimary")
+    cl.wait_line(r"^focus in surface=main")
+    got = x11_run(c, "xclip", "-o", "-selection", "primary", timeout=10)
+    t.check(got.stdout == "from Wayland primary", f"xclip -o: {got.stdout!r} {got.stderr!r}")
+
+
 def test_xterm(t):
     """A real X11 app: xterm maps, takes keyboard input, shows its title and closes."""
     c = t.compositor()
