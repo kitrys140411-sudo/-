@@ -13,6 +13,7 @@
 //!   dialog event=mapped                       --dialog: the transient dialog is shown
 //!   grab status=success|...                   --grab-pointer: the pointer grab after the first click
 //!   look dx=.. dy=..                          --grab-pointer: motion away from the center (then warped back)
+//!   titlebar event=move                       --titlebar: a press on the title strip asked the WM to move
 //!   closed                                    WM_DELETE_WINDOW from the window manager
 //!   exit reason=timeout|key
 
@@ -44,6 +45,7 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE_DIALOG,
         _NET_WM_WINDOW_TYPE_POPUP_MENU,
         _NET_WM_PID,
+        _NET_WM_MOVERESIZE,
     }
 }
 
@@ -165,6 +167,21 @@ impl Client {
         c.map_window(w).map_err(|e| e.to_string())?;
         self.popup = Some(w);
         emit(&format!("popup event=open x={x} y={y} root_x={} root_y={}", t.dst_x, t.dst_y));
+        Ok(())
+    }
+
+    /// Client-side title bar (Steam, Chromium, many games' launchers): a
+    /// press on it lets the window manager move the window. The implicit
+    /// grab of the press is released first, as EWMH asks.
+    fn titlebar_move(&self, root_x: i16, root_y: i16, button: u8) -> Result<(), String> {
+        let c = &self.conn;
+        c.ungrab_pointer(x11rb::CURRENT_TIME).map_err(|e| e.to_string())?;
+        // _NET_WM_MOVERESIZE_MOVE = 8; source indication 1 = application.
+        let data = [root_x as u32, root_y as u32, 8, u32::from(button), 1];
+        let ev = ClientMessageEvent::new(32, self.main, self.atoms._NET_WM_MOVERESIZE, data);
+        c.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)
+            .map_err(|e| e.to_string())?;
+        emit("titlebar event=move");
         Ok(())
     }
 
@@ -335,6 +352,9 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                 ));
                 if opts.grab_pointer && !c.grabbed {
                     c.grab_pointer()?;
+                }
+                if opts.titlebar && e.event == c.main && e.detail == 1 && e.event_y < 32 {
+                    c.titlebar_move(e.root_x, e.root_y, e.detail)?;
                 }
                 if opts.popup {
                     if c.popup.is_some() {

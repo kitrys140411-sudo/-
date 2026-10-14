@@ -151,6 +151,9 @@ def test_x11_maximize_fullscreen_close(t):
     t.check((wf["x"], wf["y"], wf["w"], wf["h"]) == (0, 0, 1280, 800), wf)
     f.wait_line(r"^configure x=0 y=0 w=1280 h=800 synthetic=1")
     t.check(c.shell()["dock_shown"] < 0.5, "dock should hide behind a fullscreen window")
+    # Nothing of ours is drawn over a fullscreen X11 game: KMS could scan its buffer out.
+    scene = json.loads(c.ipc("scene"))
+    t.check(scene["candidate"] and scene["top"] == "window", scene)
     # Closing sends WM_DELETE_WINDOW; the client exits and the window goes away.
     c.action("close")
     f.wait_line(r"^closed")
@@ -164,6 +167,69 @@ def test_x11_legacy_fullscreen_by_size(t):
     c = t.compositor()
     cl, w = map_x11(c, "XGame", "--size", "1280x800", "--color", "#304050")
     t.check(w["layout"] == "fullscreen" and (w["x"], w["y"], w["w"], w["h"]) == (0, 0, 1280, 800), w)
+
+
+def test_x11_titlebar_drag_moves_window(t):
+    """Client-side title bars (Steam's own) move the window through _NET_WM_MOVERESIZE."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XDrag", "--titlebar", "--size", "500x300", "--color", "#5070a0")
+    x0, y0 = w["x"], w["y"]
+    c.pointer(x0 + 100, y0 + 10)
+    c.button(BTN_LEFT, True)
+    cl.wait_line(r"^titlebar event=move")
+    time.sleep(0.2)
+    for i in range(1, 7):
+        c.pointer(x0 + 100 - 15 * i, y0 + 10 + 12 * i)
+    c.button(BTN_LEFT, False)
+    c.settle()
+    w = c.window("XDrag")
+    t.check(near(w["x"], x0 - 90, 1) and near(w["y"], y0 + 72, 1), f"moved to {w['x']},{w['y']} from {x0},{y0}")
+    cl.wait_line(rf"^configure x={int(w['x'])} y={int(w['y'])} w=500 h=300 synthetic=1")
+    # The grab ended with the release: the pointer moves freely, the window stays.
+    c.pointer(x0 + 300, y0 + 250)
+    t.check((c.window("XDrag")["x"], c.window("XDrag")["y"]) == (w["x"], w["y"]), c.window("XDrag"))
+
+
+def test_x11_client_resize_request(t):
+    """A floating X11 window may resize itself; where it is stays the window manager's choice."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XResize", "--size", "400x300")
+    wid = x11_run(c, "xdotool", "search", "--name", "^XResize$").stdout.split()[0]
+    x11_run(c, "xdotool", "windowsize", wid, "520", "260")
+    c.wait(lambda: (c.window("XResize")["w"], c.window("XResize")["h"]) == (520, 260), 10, "resized")
+    c.settle()
+    r = c.window("XResize")
+    t.check((r["x"], r["y"]) == (w["x"], w["y"]), f"{w} -> {r}")
+    cl.wait_line(r"^configure x=\d+ y=\d+ w=520 h=260 synthetic=0")
+    x11_run(c, "xdotool", "windowmove", wid, "10", "500")
+    time.sleep(0.5)
+    m = c.window("XResize")
+    t.check((m["x"], m["y"]) == (w["x"], w["y"]), f"a mapped window moved itself: {m}")
+    t.check(xwininfo_pos(c, "XResize") == (int(w["x"]), int(w["y"])), xwininfo_pos(c, "XResize"))
+
+
+def test_x11_at_scale_2(t):
+    """HiDPI: X11 windows are laid out in logical pixels (Xwayland runs at scale 1 and
+    the compositor scales its buffers up), and X root coordinates are logical too, so
+    menus placed by the client land where they belong."""
+    c = t.compositor(scale=2.0)
+    cl, w = map_x11(c, "XHi", "--popup", "--size", "300x180", "--color", "#7aa2f7")
+    # 640x400 logical: centered in the work area under the 32 px panel.
+    t.check((w["w"], w["h"]) == (300, 180) and near(w["x"], (640 - 300) / 2, 1) and near(w["y"], 32 + (368 - 180) / 2, 1), w)
+    t.check(xwininfo_pos(c, "XHi") == (int(w["x"]), int(w["y"])), xwininfo_pos(c, "XHi"))
+    px, py = w["x"] + 40, w["y"] + 50
+    c.pointer(px, py)
+    c.click(code=BTN_RIGHT)
+    m = cl.wait_line(r"^popup event=open x=40 y=50 root_x=(-?\d+) root_y=(-?\d+)")
+    t.check((int(m.group(1)), int(m.group(2))) == (int(px), int(py)), m.group(0))
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "menu")
+    time.sleep(0.3)
+    img = c.screenshot("scale2")
+    # Physical pixels: the window and its menu at twice the logical size.
+    r, g, b = img.mean(int(2 * px) + 120, int(2 * py) + 80, int(2 * px) + 280, int(2 * py) + 160)
+    t.check(r > 180 and g > 140 and b < 140, f"menu color {(r, g, b)} at 2x")
+    r, g, b = img.mean(int(2 * w["x"]) + 500, int(2 * w["y"]) + 120, int(2 * w["x"]) + 580, int(2 * w["y"]) + 200)
+    t.check(b > 200 and r < 160, f"window body {(r, g, b)} at 2x")
 
 
 def test_x11_override_redirect_menu(t):

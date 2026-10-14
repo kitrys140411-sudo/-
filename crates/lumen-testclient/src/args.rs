@@ -94,6 +94,8 @@ pub struct Options {
     pub grab_pointer: bool,
     /// `--copy` and `--paste` use the primary selection instead of the clipboard.
     pub primary: bool,
+    /// X11: a press on the title strip starts a window move (_NET_WM_MOVERESIZE).
+    pub titlebar: bool,
 }
 
 impl Default for Options {
@@ -123,6 +125,7 @@ impl Default for Options {
             opaque: false,
             grab_pointer: false,
             primary: false,
+            titlebar: false,
         }
     }
 }
@@ -168,6 +171,8 @@ usage: lumen-testclient [OPTIONS]
   --grab-pointer         with --x11: mouse look like SDL/Wine games (on the first click: grab
                          the pointer confined to the window, hide the cursor, warp it back
                          to the center after every motion)
+  --titlebar             with --x11: a press on the title strip moves the window through the
+                         window manager (_NET_WM_MOVERESIZE), like Steam's own title bar
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -254,7 +259,8 @@ where
                 opts.stripes = true;
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
-            | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" | "--primary" => {
+            | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" | "--primary"
+            | "--titlebar" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -266,6 +272,7 @@ where
                     "--opaque" => opts.opaque = true,
                     "--grab-pointer" => opts.grab_pointer = true,
                     "--primary" => opts.primary = true,
+                    "--titlebar" => opts.titlebar = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -280,6 +287,9 @@ where
     }
     if opts.grab_pointer && !opts.x11 {
         return Err("--grab-pointer needs --x11".into());
+    }
+    if opts.titlebar && !opts.x11 {
+        return Err("--titlebar needs --x11".into());
     }
     Ok(Command::Run(opts))
 }
@@ -399,6 +409,8 @@ mod tests {
         assert!(run(&["--dialog"]).is_err());
         assert!(run(&["--grab-pointer"]).is_err());
         assert!(run(&["--x11", "--grab-pointer"]).unwrap().grab_pointer);
+        assert!(run(&["--titlebar"]).is_err());
+        assert!(run(&["--x11", "--titlebar"]).unwrap().titlebar);
         assert!(run(&["--x11=1"]).is_err());
     }
 
