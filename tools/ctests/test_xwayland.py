@@ -269,3 +269,26 @@ def test_xterm(t):
             p.kill()
             p.wait()
         log.close()
+
+
+def test_x11_mouse_look(t):
+    """SDL/Wine-style mouse look in an X11 game: a confined grab, an invisible
+    cursor and pointer warps become a Wayland pointer lock (Xwayland's warp
+    emulation), and mouse motion arrives as motion away from the center."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XLook", "--grab-pointer", "--size", "800x500", "--color", "#405030")
+    c.pointer(w["x"] + 400, w["y"] + 250)
+    c.click()
+    cl.wait_line(r"^grab status=success")
+    c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] == "locked", 10, "pointer lock from Xwayland")
+    t.check(c.cursor()[2] == "hidden", c.cursor())
+    x0, y0, _ = c.cursor()
+    c.ipc("motion 30 0")
+    cl.wait_line(r"^look dx=30 dy=0")
+    c.ipc("motion -12 7")
+    cl.wait_line(r"^look dx=-12 dy=7")
+    t.check(c.cursor()[:2] == (x0, y0), f"locked pointer moved: {c.cursor()} vs {(x0, y0)}")
+    # Super escapes the game's grab too.
+    c.key("super")
+    c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] is None, 10, "lock released")
+    t.check(c.cursor()[2] != "hidden", c.cursor())

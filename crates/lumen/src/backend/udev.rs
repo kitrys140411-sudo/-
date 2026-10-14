@@ -11,6 +11,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::compositor::{FrameFlags, PrimaryPlaneElement};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
@@ -21,6 +22,8 @@ use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
+use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
@@ -33,7 +36,8 @@ use smithay::reexports::drm::control::{connector, crtc, Device as ControlDevice,
 use smithay::reexports::input::{self as libinput, Libinput};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Transform};
-use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
+use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 
 use super::Backend;
 use crate::render::LumenElement;
@@ -53,10 +57,38 @@ enum Redraw {
     WaitingForEstimatedVBlank { token: RegistrationToken, redraw_needed: bool },
 }
 
+/// linux-dmabuf feedback for the surfaces on one output. A surface whose
+/// buffer is (or was a candidate to be) scanned out directly, i.e. a
+/// fullscreen game or video, is sent the scanout feedback: a preferred
+/// tranche with the formats and modifiers the primary plane takes, so the
+/// client reallocates buffers KMS can show without composition (Mesa's EGL
+/// and Vulkan WSI follow it). Everything else gets the render feedback.
+struct OutputFeedback {
+    render: DmabufFeedback,
+    scanout: DmabufFeedback,
+}
+
+impl OutputFeedback {
+    fn new(main: libc::dev_t, render_formats: &FormatSet, out: &Out) -> Option<OutputFeedback> {
+        let (plane_formats, scanout_dev) = out.with_compositor(|c| {
+            let surface = c.surface();
+            (surface.plane_info().formats.clone(), surface.device_fd().dev_id().ok())
+        });
+        // Only formats we can also render from: if the scanout attempt fails
+        // the buffer is composited instead.
+        let scanout_formats: FormatSet = plane_formats.intersection(render_formats).copied().collect();
+        let builder = DmabufFeedbackBuilder::new(main, render_formats.iter().copied());
+        let render = builder.clone().build().ok()?;
+        let scanout = builder.add_preference_tranche(scanout_dev?, Some(TrancheFlags::Scanout), scanout_formats).build().ok()?;
+        Some(OutputFeedback { render, scanout })
+    }
+}
+
 struct Surface {
     output: Output,
     /// Variable refresh rate can be switched without a modeset.
     vrr_capable: bool,
+    dmabuf_feedback: Option<OutputFeedback>,
     /// The wl_output global (removed when the connector goes away).
     global: smithay::reexports::wayland_server::backend::GlobalId,
     out: Out,
@@ -88,6 +120,8 @@ impl Surface {
 struct Device {
     manager: DrmOutputManager<Allocator, Exporter, Feedback, DrmDeviceFd>,
     surfaces: HashMap<crtc::Handle, Surface>,
+    /// Main device and formats of the linux-dmabuf global (hardware rendering only).
+    dmabuf_main: Option<(libc::dev_t, FormatSet)>,
     _token: RegistrationToken,
 }
 
@@ -119,6 +153,22 @@ impl VrrMode {
     }
 }
 
+/// Which planes frames may use besides composition (`LUMEN_OVERLAY_PLANES=1`
+/// adds overlay planes). A fullscreen client buffer goes straight to the
+/// primary plane in any format the plane takes (games' 10-bit swapchains
+/// too; smithay test-commits it first), the cursor to the cursor plane.
+/// Overlay planes stay off by default: they save little on a desktop whose
+/// windows have rounded corners (never scanned out) and are where drivers
+/// misbehave most.
+fn frame_flags() -> FrameFlags {
+    let mut flags =
+        FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+    if matches!(std::env::var("LUMEN_OVERLAY_PLANES").as_deref(), Ok("1" | "on" | "yes" | "true")) {
+        flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
+    }
+    flags
+}
+
 pub struct UdevData {
     pub session: LibSeatSession,
     pub renderer: Option<GlesRenderer>,
@@ -130,6 +180,7 @@ pub struct UdevData {
     /// Outputs are off (idle blanking): nothing is rendered until input.
     blanked: bool,
     vrr: VrrMode,
+    frame_flags: FrameFlags,
 }
 
 impl UdevData {
@@ -257,6 +308,7 @@ pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backe
         input_devices: Vec::new(),
         blanked: false,
         vrr: VrrMode::from_env(),
+        frame_flags: frame_flags(),
     });
     add_device(state, &path, node)?;
 
@@ -346,13 +398,15 @@ fn add_device(state: &mut Lumen, path: &Path, node: DrmNode) -> Result<(), Strin
     super::update_shm_formats(&mut state.shm_state, &renderer);
 
     // linux-dmabuf for clients, if there is a render node to share buffers with.
+    let mut dmabuf_main = None;
     if let Some(rn) = render_node.or_else(|| node.node_with_type(NodeType::Render).and_then(|n| n.ok())) {
         if !software {
             let formats = renderer.dmabuf_formats();
-            match DmabufFeedbackBuilder::new(rn.dev_id(), formats).build() {
+            match DmabufFeedbackBuilder::new(rn.dev_id(), formats.iter().copied()).build() {
                 Ok(feedback) => {
                     let global = state.dmabuf_state.create_global_with_default_feedback::<Lumen>(&state.dh, &feedback);
                     state.dmabuf_global = Some(global);
+                    dmabuf_main = Some((rn.dev_id(), formats));
                 }
                 Err(e) => tracing::warn!("dmabuf feedback: {e}"),
             }
@@ -378,7 +432,7 @@ fn add_device(state: &mut Lumen, path: &Path, node: DrmNode) -> Result<(), Strin
         .map_err(|e| format!("DRM source: {e}"))?;
     let Backend::Udev(d) = &mut state.backend else { unreachable!() };
     d.renderer = Some(renderer);
-    d.device = Some(Device { manager, surfaces: HashMap::new(), _token: token });
+    d.device = Some(Device { manager, surfaces: HashMap::new(), dmabuf_main, _token: token });
     scan_connectors(state);
     Ok(())
 }
@@ -470,6 +524,7 @@ fn scan_connectors(state: &mut Lumen) {
                 let vrr_capable = out
                     .with_compositor(|c| c.vrr_supported(conn))
                     .is_ok_and(|v| v == smithay::backend::drm::VrrSupport::Supported);
+                let dmabuf_feedback = dev.dmabuf_main.as_ref().and_then(|(main, formats)| OutputFeedback::new(*main, formats, &out));
                 let refresh = Duration::from_secs_f64(1000.0 / wl_mode.refresh.max(1) as f64);
                 tracing::info!(
                     "output {name}: {}x{}@{:.2} scale {scale}{}",
@@ -483,6 +538,7 @@ fn scan_connectors(state: &mut Lumen) {
                     Surface {
                         output: output.clone(),
                         vrr_capable,
+                        dmabuf_feedback,
                         global,
                         out,
                         redraw: Redraw::Idle,
@@ -559,7 +615,7 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
         let Some(renderer) = d.renderer.as_mut() else { return };
         let (elements, clear) = crate::render::build_scene(renderer, &mut ctx, &output);
         let primary = ctx.primary.as_deref() == Some(&output.name());
-        let vrr = d.vrr;
+        let (vrr, flags) = (d.vrr, d.frame_flags);
         let Some(s) = d.device.as_mut().and_then(|dev| dev.surfaces.get_mut(&crtc)) else { return };
         // Variable refresh rate follows the fullscreen window (of the primary
         // output, where windows are laid out).
@@ -573,11 +629,12 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
             }
         }
         s.out
-            .render_frame(renderer, &elements, clear, FrameFlags::DEFAULT)
+            .render_frame(renderer, &elements, clear, flags)
             .map(|r| {
                 // A client buffer scanned out directly (fullscreen game or
                 // video): no composition at all for this frame.
                 let direct = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
+                let states = s.dmabuf_feedback.is_some().then(|| r.states.clone());
                 // Without an exportable fence (software rendering, some drivers)
                 // KMS cannot wait for the GPU: wait here, or a half-rendered
                 // buffer would be scanned out.
@@ -586,14 +643,17 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
                         let _ = element.sync.wait();
                     }
                 }
-                (!r.is_empty, direct)
+                (!r.is_empty, direct, states)
             })
             .map_err(|e| format!("{e:?}"))
     };
     let took = start.elapsed();
-    let result = result.map(|(damaged, direct)| {
+    let result = result.map(|(damaged, direct, states)| {
         if damaged {
             state.stats.note_scanout(direct);
+        }
+        if let Some(states) = states {
+            send_dmabuf_feedback(state, crtc, &output, &states);
         }
         damaged
     });
@@ -635,6 +695,23 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
                 s.redraw = Redraw::Idle;
             }
         }
+    }
+}
+
+/// Tell the clients on `output` which dmabuf feedback applies to them after
+/// this frame (smithay only sends it to a surface when it changes).
+fn send_dmabuf_feedback(state: &Lumen, crtc: crtc::Handle, output: &Output, states: &RenderElementStates) {
+    let Backend::Udev(d) = &state.backend else { return };
+    let Some(fb) = d.device.as_ref().and_then(|dev| dev.surfaces.get(&crtc)).and_then(|s| s.dmabuf_feedback.as_ref()) else { return };
+    for w in &state.wm.windows {
+        if !w.mapped || state.window_output(w.id).as_ref() != Some(output) {
+            continue;
+        }
+        w.window.send_dmabuf_feedback(
+            output,
+            |_, _| Some(output.clone()),
+            |surface, _| select_dmabuf_feedback(surface, states, &fb.render, &fb.scanout),
+        );
     }
 }
 

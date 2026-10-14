@@ -315,6 +315,10 @@ impl Lumen {
             Action::ToggleHud => self.shell.hud = !self.shell.hud,
             Action::ShellKey { sym, utf8, mods } => self.shell_key(sym, utf8, mods),
         }
+        // What is under a pointer that did not move may have changed (the
+        // overview opened over a game that hid its cursor): the cursor and
+        // pointer focus follow without waiting for motion.
+        self.refresh_pointer_focus();
         self.queue_redraw_all();
     }
 

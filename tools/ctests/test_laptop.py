@@ -108,7 +108,9 @@ def test_brightness_keys(t):
     c.key_down("brightnessup")
     time.sleep(1.2)
     c.key_up("brightnessup")
-    c.wait(lambda: int(read(root, "class/backlight/intel_backlight/brightness")) >= 650, 5, "held key repeats")
+    # The fake sysfs file is a regular file: a read may land between the
+    # compositor's truncate and write and see it empty.
+    c.wait(lambda: int(read(root, "class/backlight/intel_backlight/brightness") or 0) >= 650, 5, "held key repeats")
     time.sleep(0.3)
     level = read(root, "class/backlight/intel_backlight/brightness")
     time.sleep(0.5)

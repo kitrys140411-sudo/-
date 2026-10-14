@@ -88,6 +88,10 @@ pub struct Options {
     pub inhibit_shortcuts: bool,
     /// Opaque buffers (XRGB8888, like a game's swapchain) instead of ARGB8888.
     pub opaque: bool,
+    /// X11: mouse look the way SDL and Wine games do it: on the first click,
+    /// grab the pointer confined to the window, hide the cursor and warp the
+    /// pointer back to the center after every motion.
+    pub grab_pointer: bool,
 }
 
 impl Default for Options {
@@ -115,6 +119,7 @@ impl Default for Options {
             idle_inhibit: false,
             inhibit_shortcuts: false,
             opaque: false,
+            grab_pointer: false,
         }
     }
 }
@@ -156,6 +161,9 @@ usage: lumen-testclient [OPTIONS]
                          --popup (an override-redirect menu at the click), --exit-after-ms,
                          --close-on-key
   --dialog               with --x11: open a transient dialog once the window is mapped
+  --grab-pointer         with --x11: mouse look like SDL/Wine games (on the first click: grab
+                         the pointer confined to the window, hide the cursor, warp it back
+                         to the center after every motion)
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -242,7 +250,7 @@ where
                 opts.stripes = true;
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
-            | "--inhibit-shortcuts" | "--opaque" => {
+            | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -252,6 +260,7 @@ where
                     "--relative" => opts.relative = true,
                     "--idle-inhibit" => opts.idle_inhibit = true,
                     "--opaque" => opts.opaque = true,
+                    "--grab-pointer" => opts.grab_pointer = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -263,6 +272,9 @@ where
     }
     if opts.dialog && !opts.x11 {
         return Err("--dialog needs --x11".into());
+    }
+    if opts.grab_pointer && !opts.x11 {
+        return Err("--grab-pointer needs --x11".into());
     }
     Ok(Command::Run(opts))
 }
@@ -379,6 +391,8 @@ mod tests {
         assert!(o.x11 && o.dialog && o.popup);
         assert!(run(&["--lock-pointer", "--confine-pointer"]).is_err());
         assert!(run(&["--dialog"]).is_err());
+        assert!(run(&["--grab-pointer"]).is_err());
+        assert!(run(&["--x11", "--grab-pointer"]).unwrap().grab_pointer);
         assert!(run(&["--x11=1"]).is_err());
     }
 

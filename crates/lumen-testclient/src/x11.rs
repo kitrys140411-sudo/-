@@ -11,6 +11,8 @@
 //!   popup event=open x=.. y=.. root_x=.. root_y=..   an override-redirect menu at the click
 //!   popup event=closed reason=click
 //!   dialog event=mapped                       --dialog: the transient dialog is shown
+//!   grab status=success|...                   --grab-pointer: the pointer grab after the first click
+//!   look dx=.. dy=..                          --grab-pointer: motion away from the center (then warped back)
 //!   closed                                    WM_DELETE_WINDOW from the window manager
 //!   exit reason=timeout|key
 
@@ -19,8 +21,8 @@ use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, NotifyDetail, PropMode, Rectangle,
-    Window, WindowClass,
+    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus, NotifyDetail,
+    PropMode, Rectangle, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -70,6 +72,8 @@ struct Client {
     size: (u16, u16),
     ready: bool,
     dialog_shown: bool,
+    /// --grab-pointer: the pointer is grabbed (mouse look).
+    grabbed: bool,
 }
 
 impl Client {
@@ -86,10 +90,12 @@ impl Client {
     }
 
     /// A top-level window with a title, WM_CLASS and WM_DELETE_WINDOW.
-    fn create_toplevel(&self, title: &str, app_id: &str, size: (u16, u16), color: (u8, u8, u8)) -> Result<Window, String> {
+    fn create_toplevel(&self, title: &str, app_id: &str, size: (u16, u16), color: (u8, u8, u8), motion: bool) -> Result<Window, String> {
         let c = &self.conn;
         let w = c.generate_id().map_err(|e| e.to_string())?;
-        let mask = EventMask::EXPOSURE
+        let motion = if motion { EventMask::POINTER_MOTION } else { EventMask::NO_EVENT };
+        let mask = motion
+            | EventMask::EXPOSURE
             | EventMask::STRUCTURE_NOTIFY
             | EventMask::FOCUS_CHANGE
             | EventMask::KEY_PRESS
@@ -162,6 +168,46 @@ impl Client {
         Ok(())
     }
 
+    /// The center of the main window, where mouse look keeps the pointer.
+    fn center(&self) -> (i16, i16) {
+        ((self.size.0 / 2) as i16, (self.size.1 / 2) as i16)
+    }
+
+    /// Mouse look as SDL (relative mouse mode without XInput2) and Wine do
+    /// it: an active grab confined to the window, an invisible cursor and the
+    /// pointer warped to the center. Xwayland turns this into a pointer lock
+    /// with relative motion on the Wayland side.
+    fn grab_pointer(&mut self) -> Result<(), String> {
+        let c = &self.conn;
+        let err = |e: x11rb::errors::ConnectionError| e.to_string();
+        let pixmap = c.generate_id().map_err(|e| e.to_string())?;
+        c.create_pixmap(1, pixmap, self.main, 1, 1).map_err(err)?;
+        let cursor = c.generate_id().map_err(|e| e.to_string())?;
+        c.create_cursor(cursor, pixmap, pixmap, 0, 0, 0, 0, 0, 0, 0, 0).map_err(err)?;
+        c.free_pixmap(pixmap).map_err(err)?;
+        let mask = EventMask::POINTER_MOTION | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE;
+        let reply = c
+            .grab_pointer(false, self.main, mask, GrabMode::ASYNC, GrabMode::ASYNC, self.main, cursor, x11rb::CURRENT_TIME)
+            .map_err(err)?
+            .reply()
+            .map_err(|e| e.to_string())?;
+        let status = match reply.status {
+            GrabStatus::SUCCESS => "success",
+            GrabStatus::ALREADY_GRABBED => "already-grabbed",
+            GrabStatus::INVALID_TIME => "invalid-time",
+            GrabStatus::NOT_VIEWABLE => "not-viewable",
+            GrabStatus::FROZEN => "frozen",
+            _ => "unknown",
+        };
+        emit(&format!("grab status={status}"));
+        if reply.status == GrabStatus::SUCCESS {
+            self.grabbed = true;
+            let (cx, cy) = self.center();
+            c.warp_pointer(x11rb::NONE, self.main, 0, 0, 0, 0, cx, cy).map_err(err)?;
+        }
+        Ok(())
+    }
+
     fn close_popup(&mut self) {
         if let Some(w) = self.popup.take() {
             let _ = self.conn.destroy_window(w);
@@ -171,7 +217,7 @@ impl Client {
 
     fn open_dialog(&mut self, opts: &Options) -> Result<(), String> {
         let color = ((opts.color.0 / 2).saturating_add(100), opts.color.1, opts.color.2);
-        let w = self.create_toplevel(&format!("{} dialog", opts.title), &opts.app_id, DIALOG_SIZE, color)?;
+        let w = self.create_toplevel(&format!("{} dialog", opts.title), &opts.app_id, DIALOG_SIZE, color, false)?;
         let a = &self.atoms;
         let c = &self.conn;
         c.change_property32(PropMode::REPLACE, w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, &[self.main]).map_err(|e| e.to_string())?;
@@ -190,8 +236,20 @@ pub fn run(opts: &Options) -> Result<u8, String> {
     let gc = conn.generate_id().map_err(|e| e.to_string())?;
     conn.create_gc(gc, screen.root, &CreateGCAux::new().foreground(pixel(darker(opts.color)))).map_err(|e| e.to_string())?;
     let size = (opts.size.0.min(u16::MAX as u32) as u16, opts.size.1.min(u16::MAX as u32) as u16);
-    let mut c = Client { conn, root: screen.root, atoms, main: 0, dialog: None, popup: None, gc, size, ready: false, dialog_shown: false };
-    c.main = c.create_toplevel(&opts.title, &opts.app_id, size, opts.color)?;
+    let mut c = Client {
+        conn,
+        root: screen.root,
+        atoms,
+        main: 0,
+        dialog: None,
+        popup: None,
+        gc,
+        size,
+        ready: false,
+        dialog_shown: false,
+        grabbed: false,
+    };
+    c.main = c.create_toplevel(&opts.title, &opts.app_id, size, opts.color, opts.grab_pointer)?;
     if opts.initial_state == Some(InitialState::Fullscreen) {
         // EWMH: a window may ask for states before it is mapped.
         let a = &c.atoms;
@@ -275,6 +333,9 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                     e.root_y,
                     c.surface_name(e.event)
                 ));
+                if opts.grab_pointer && !c.grabbed {
+                    c.grab_pointer()?;
+                }
                 if opts.popup {
                     if c.popup.is_some() {
                         c.close_popup();
@@ -291,6 +352,14 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                 e.event_y,
                 c.surface_name(e.event)
             )),
+            Event::MotionNotify(e) if c.grabbed => {
+                let (cx, cy) = c.center();
+                let (dx, dy) = (e.event_x - cx, e.event_y - cy);
+                if (dx, dy) != (0, 0) {
+                    emit(&format!("look dx={dx} dy={dy}"));
+                    let _ = c.conn.warp_pointer(x11rb::NONE, c.main, 0, 0, 0, 0, cx, cy);
+                }
+            }
             Event::EnterNotify(e) => {
                 emit(&format!("enter kind=pointer x={} y={} surface={}", e.event_x, e.event_y, c.surface_name(e.event)))
             }
