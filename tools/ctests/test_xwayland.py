@@ -43,7 +43,8 @@ def test_xwayland_starts_after_first_frame(t):
     x = xinfo(c)
     t.check(x["enabled"] and x["ready"] and re.fullmatch(r":\d+", x["display"]), x)
     t.check(x["ready_ms"] is not None and x["ready_ms"] < 10000, f"slow Xwayland start: {x}")
-    t.log(f"Xwayland {x['display']} ready in {x['ready_ms']} ms, RSS {x['rss_kib']} KiB")
+    t.log(f"Xwayland {x['display']} ready in {x['ready_ms']} ms, RSS {x['rss_kib']} KiB, PSS {x['pss_kib']} KiB, "
+          f"private {x['private_kib']} KiB")
     # We are the X window manager.
     out = subprocess.run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK", "_NET_SUPPORTED"], env=env,
                          capture_output=True, text=True, timeout=10).stdout

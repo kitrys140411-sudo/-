@@ -521,13 +521,15 @@ impl Lumen {
             })
             .collect();
         format!(
-            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"overrides\":[{}]}}",
+            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"pss_kib\":{},\"private_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"overrides\":[{}]}}",
             x.enabled,
             x.ready,
             opt(x.display_env().map(|d| json_str(&d))),
             opt(x.pid.map(|p| p.to_string())),
             opt(x.ready_after.map(|d| d.as_millis().to_string())),
             opt(x.rss_kib().map(|k| k.to_string())),
+            opt(x.pss_private_kib().map(|m| m.0.to_string())),
+            opt(x.pss_private_kib().map(|m| m.1.to_string())),
             x.failures,
             opt(x.error.as_deref().map(json_str)),
             self.x11_focused(),

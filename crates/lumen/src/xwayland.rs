@@ -3,10 +3,11 @@
 //! Xwayland is started right after the first frame is on screen, not lazily
 //! on the first X connection: smithay 0.7 creates the X11 sockets itself when
 //! it spawns the server and its client data cannot be made by a compositor,
-//! so a lazy start would mean re-implementing the spawn. Deferring it past
-//! the first frame keeps it off the boot path; its cost (measured: about
-//! 0.1-0.2 s until ready and ~25 MB RSS natively, see DECISIONS.md) is paid
-//! while the desktop is already usable. `LUMEN_XWAYLAND=0` turns it off.
+//! so a lazy start would mean re-implementing the spawn. It is cheap enough
+//! not to bother (measured idle, software rendering: ready 50-80 ms after the
+//! spawn, RSS ~47 MB of which ~12 MB private, PSS ~29 MB; `xwayland` on the
+//! control socket reports it), and deferring it past the first frame keeps
+//! it off the boot path. `LUMEN_XWAYLAND=0` turns it off.
 //!
 //! Window management: managed X11 windows become [`crate::wm::Win`]s like
 //! xdg toplevels (placement, focus, stacking, move/resize, maximize and
@@ -114,8 +115,44 @@ impl XwaylandState {
     /// Resident memory of the Xwayland process in KiB (from /proc).
     pub fn rss_kib(&self) -> Option<u64> {
         let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid?)).ok()?;
-        status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        kib_field(&status, "VmRSS:")
     }
+
+    /// What Xwayland really costs in KiB: its proportional share of resident
+    /// memory (RSS counts all of Mesa and LLVM, which the compositor and
+    /// every GL client map too) and its private memory.
+    pub fn pss_private_kib(&self) -> Option<(u64, u64)> {
+        let rollup = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid?)).ok()?;
+        let private = kib_field(&rollup, "Private_Clean:")? + kib_field(&rollup, "Private_Dirty:")?;
+        Some((kib_field(&rollup, "Pss:")?, private))
+    }
+}
+
+/// The newest child process of the compositor named Xwayland (smithay keeps
+/// the child handle to itself).
+fn xwayland_child_pid() -> Option<i32> {
+    let me = std::process::id().to_string();
+    let mut best: Option<(u64, i32)> = None;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
+        // "pid (comm) state ppid ... starttime(22nd field) ..."; comm may contain spaces.
+        let Some((comm, rest)) = stat.split_once(" (").and_then(|(_, r)| r.rsplit_once(") ")) else { continue };
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if comm != "Xwayland" || fields.get(1) != Some(&me.as_str()) {
+            continue;
+        }
+        let start = fields.get(19).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        if best.is_none_or(|(s, _)| start >= s) {
+            best = Some((start, pid));
+        }
+    }
+    best.map(|(_, pid)| pid)
+}
+
+/// A "Name:   1234 kB" line of a /proc file, in KiB.
+fn kib_field(text: &str, name: &str) -> Option<u64> {
+    text.lines().find_map(|l| l.strip_prefix(name)).and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
 }
 
 /// X11 sockets live in /tmp/.X11-unix (sticky, world-writable, like /tmp).
@@ -141,7 +178,7 @@ fn xwayland_env() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(k, _)| {
             k.starts_with("MESA_") || k.starts_with("LIBGL_") || k.starts_with("GBM_") || k.starts_with("__GLX_") || k == "DRI_PRIME"
-                || k.starts_with("XKB_") || k == "HOME" || k == "LANG"
+                || k.starts_with("XWAYLAND_") || k.starts_with("XKB_") || k == "HOME" || k == "LANG"
         })
         .collect()
 }
@@ -174,7 +211,9 @@ impl Lumen {
             }
         };
         let display = xwayland.display_number();
-        let pid = client.get_credentials(&self.dh).ok().map(|c| c.pid);
+        // (Not the Wayland client's credentials: Xwayland's connection is
+        // one end of a socketpair made here, so those name the compositor.)
+        let pid = xwayland_child_pid();
         let token = self.lh.insert_source(xwayland, |event, _, state| match event {
             XWaylandEvent::Ready { x11_socket, display_number } => state.xwayland_ready(x11_socket, display_number),
             XWaylandEvent::Error => state.xwayland_lost("Xwayland exited during startup"),
@@ -228,6 +267,7 @@ impl Lumen {
             display = %name,
             ready_ms = x.ready_after.map(|d| d.as_millis() as u64),
             rss_kib = x.rss_kib(),
+            pss_kib = x.pss_private_kib().map(|m| m.0),
             "Xwayland ready"
         );
         self.x11_restack();
@@ -571,5 +611,19 @@ pub fn focus_for(w: &crate::wm::Win) -> Option<FocusTarget> {
     match w.x11() {
         Some(x) => Some(FocusTarget::X11(x.clone())),
         None => w.surface().map(FocusTarget::Surface),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kib_field;
+
+    #[test]
+    fn proc_kib_fields() {
+        let rollup = "55d0-7ffc ---p 00000000 00:00 0 [rollup]\nRss:              177788 kB\nPss:               41234 kB\nPrivate_Clean:      1200 kB\nPrivate_Dirty:     20480 kB\n";
+        assert_eq!(kib_field(rollup, "Rss:"), Some(177788));
+        assert_eq!(kib_field(rollup, "Pss:"), Some(41234));
+        assert_eq!(kib_field(rollup, "Private_Dirty:"), Some(20480));
+        assert_eq!(kib_field(rollup, "Swap:"), None);
     }
 }
