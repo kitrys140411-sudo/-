@@ -164,6 +164,10 @@ pub struct Ui {
     prev_rects: HashMap<Id, Rect>,
     /// Content extents of boxes with ids (scroll areas).
     prev_content: HashMap<Id, Vec2>,
+    /// A focused text input was built in this pass (in this overlay), and
+    /// in the previous one: app shortcuts leave its editing keys alone.
+    text_owner: Option<Option<Id>>,
+    prev_text_owner: Option<Option<Id>>,
     pub(crate) now: Instant,
     pub(crate) frame: u64,
     pub(crate) animating: bool,
@@ -172,6 +176,8 @@ pub struct Ui {
     /// the layout was wrong, e.g. a virtual list's viewport).
     pub(crate) relayout: bool,
     pub(crate) waker: crate::Waker,
+    /// Rows built so far in the current [`Ui::group`] (None outside one).
+    pub(crate) group_rows: Option<usize>,
 }
 
 impl Ui {
@@ -201,12 +207,15 @@ impl Ui {
             prev_focus_order: Vec::new(),
             prev_rects: HashMap::new(),
             prev_content: HashMap::new(),
+            text_owner: None,
+            prev_text_owner: None,
             now: Instant::now(),
             frame: 0,
             animating: false,
             repaint_at: None,
             relayout: false,
             waker,
+            group_rows: None,
         }
     }
 
@@ -281,6 +290,7 @@ impl Ui {
         self.key_owners.clear();
         self.focus_order.clear();
         self.cursor = CursorIcon::Default;
+        self.group_rows = None;
     }
 
     /// Lay out what was built, record hit boxes and handle Tab focus moves.
@@ -297,9 +307,14 @@ impl Ui {
             self.move_focus(back);
         }
         if let Some(owner) = self.focus_first.take() {
-            if let Some((id, _)) = self.focus_order.iter().find(|(_, o)| *o == Some(owner)) {
-                self.input.focus = Some(*id);
-                self.animating = true;
+            // Unless the content focused one of its widgets itself (a file
+            // chooser focuses its list), the first focusable one.
+            let inside = |f: Id| self.focus_order.iter().any(|(id, o)| *id == f && *o == Some(owner));
+            if !self.input.focus.is_some_and(inside) {
+                if let Some((id, _)) = self.focus_order.iter().find(|(_, o)| *o == Some(owner)) {
+                    self.input.focus = Some(*id);
+                    self.animating = true;
+                }
             }
         }
         // Focus on a widget that no longer exists is dropped.
@@ -313,6 +328,7 @@ impl Ui {
         }
         self.key_owner = self.key_owners.last().copied();
         self.prev_focus_order = std::mem::take(&mut self.focus_order);
+        self.prev_text_owner = self.text_owner.take();
         self.gc();
     }
 
@@ -720,8 +736,21 @@ impl Ui {
 
     /// An app keyboard shortcut was pressed, e.g.
     /// `if ui.shortcut(Shortcut::ctrl('s')) { self.save() }`.
+    ///
+    /// While a text input has the keyboard, the keys it edits with (Ctrl+A,
+    /// Ctrl+C, Delete, arrows, plain characters…) are left to it, wherever
+    /// in `view` the shortcut is checked; other shortcuts (Ctrl+S, F5,
+    /// Escape) still work.
     pub fn shortcut(&mut self, s: Shortcut) -> bool {
+        if self.prev_text_owner == Some(self.overlay) && crate::widgets::text_input::is_editing_key(s.key, s.mods) {
+            return false;
+        }
         self.take_key(s.key, s.mods)
+    }
+
+    /// A focused text input is being built (it gets the editing keys).
+    pub(crate) fn mark_text_focus(&mut self) {
+        self.text_owner = Some(self.overlay);
     }
 
     /// Use all unused key presses with `f` (text input); `f` returns whether
@@ -754,6 +783,14 @@ impl Ui {
             }
         });
         out
+    }
+
+    /// Scrolling (wheel or touchpad, logical px; positive y scrolls toward
+    /// the end) aimed at the box `id` this frame, which needs a
+    /// [`Sense`](crate::Sense) with `scroll` (a zoomable canvas). Taking it
+    /// leaves nothing for the next call.
+    pub fn scroll_delta(&mut self, id: Id) -> Vec2 {
+        self.take_scrolls(id).into_iter().fold(Vec2::ZERO, |a, (d, _, _)| a + d)
     }
 
     pub(crate) fn take_paste(&mut self, id: Id) -> Option<String> {

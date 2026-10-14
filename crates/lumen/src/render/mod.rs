@@ -234,7 +234,8 @@ fn push_window(
     } else {
         (f.loc - origin, f)
     };
-    let surface = w.surface().clone();
+    // X11 windows have no surface until Xwayland associated one.
+    let surface = w.surface()?;
     let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(r, &surface, render_loc, scale, alpha, Kind::Unspecified);
     let clip = Some(Clip { geo: clip_geo, radius });
@@ -358,14 +359,15 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         ctx.rs.aliases.clear();
     }
 
-    // Cursor (and a drag icon) on top, then the shell UI.
+    // Cursor (and a drag icon) on top, X11 menus and tooltips, then the shell UI.
     ctx.rs.glass_requests.clear();
     cursor_elements(r, ctx, out_rect, scale, &mut elements);
+    let overview = ctx.shell.overview_progress();
+    override_elements(r, ctx.wm, out_rect, scale, (1.0 - overview) as f32, &mut elements);
     if ctx.primary.as_deref().is_none_or(|p| p == out_name) {
         crate::shell::render::overlay_elements(r, ctx, output, out_rect, scale, &mut elements);
     }
 
-    let overview = ctx.shell.overview_progress();
     // Overview slots of every workspace on screen (several while sliding);
     // the overview lives on the primary output only.
     let is_primary = ctx.primary.as_deref().is_none_or(|p| p == out_name);
@@ -552,6 +554,32 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     }
     ctx.rs.text.end_frame();
     (elements, clear)
+}
+
+/// X11 override-redirect windows (menus, tooltips) where their client put
+/// them, top first. They fade out with the overview.
+fn override_elements(
+    r: &mut GlesRenderer,
+    wm: &Wm,
+    out_rect: Rectangle<f64, Logical>,
+    scale: f64,
+    alpha: f32,
+    elements: &mut Vec<LumenElement>,
+) {
+    if alpha <= 0.0 {
+        return;
+    }
+    for x in wm.overrides.iter().rev() {
+        let geo = x.geometry().to_f64();
+        let Some(surface) = x.wl_surface() else { continue };
+        if !x.alive() || !geo.overlaps(out_rect) {
+            continue;
+        }
+        let at = Point::<f64, Logical>::from((geo.loc.x - out_rect.loc.x, geo.loc.y - out_rect.loc.y)).to_physical(scale).to_i32_round();
+        let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            render_elements_from_surface_tree(r, &surface, at, scale, alpha, Kind::Unspecified);
+        elements.extend(elems.into_iter().map(LumenElement::Surface));
+    }
 }
 
 fn cursor_elements(r: &mut GlesRenderer, ctx: &mut SceneCtx, out_rect: Rectangle<f64, Logical>, scale: f64, elements: &mut Vec<LumenElement>) {

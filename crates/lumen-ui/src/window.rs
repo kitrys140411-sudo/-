@@ -577,10 +577,10 @@ impl Runtime {
         }
     }
 
-    fn on_key(&mut self, event: KeyEvent) {
+    fn on_key(&mut self, event: KeyEvent, repeat: bool) {
         let Some(key) = key_of(&event) else { return };
         let text = event.utf8.clone().filter(|t| !t.chars().any(|c| c.is_control()));
-        self.push(Event::Key(KeyPress { key, mods: self.mods, text, repeat: false }));
+        self.push(Event::Key(KeyPress { key, mods: self.mods, text, repeat }));
     }
 }
 
@@ -622,7 +622,10 @@ fn key_of(event: &KeyEvent) -> Option<Key> {
                 if c.is_control() {
                     return None;
                 }
-                Key::Char(c)
+                // In a non-Latin layout (Russian) a key is named by what it
+                // types in the US layout, so Ctrl+S is Ctrl+S in every
+                // layout; the typed text is still the layout's.
+                Key::Char(if c.is_ascii() { c } else { us_char(event.raw_code).unwrap_or(c) })
             } else if is_modifier(k) {
                 return None;
             } else {
@@ -630,6 +633,18 @@ fn key_of(event: &KeyEvent) -> Option<Key> {
             }
         }
     })
+}
+
+/// The character an evdev key code types in the US layout (letters lower
+/// case), for naming keys independently of the active layout.
+pub(crate) fn us_char(code: u32) -> Option<char> {
+    const ROWS: [(u32, &str); 4] = [(2, "1234567890-="), (16, "qwertyuiop[]"), (30, "asdfghjkl;'`"), (44, "zxcvbnm,./")];
+    match code {
+        43 => return Some('\\'),
+        57 => return Some(' '),
+        _ => {}
+    }
+    ROWS.iter().find_map(|&(first, chars)| chars.chars().nth(code.checked_sub(first)? as usize))
 }
 
 fn is_modifier(k: Keysym) -> bool {
@@ -743,7 +758,7 @@ impl SeatHandler for Runtime {
                     &seat,
                     None,
                     lh,
-                    Box::new(|rt: &mut Runtime, _kb: &wl_keyboard::WlKeyboard, event: KeyEvent| rt.on_key(event)),
+                    Box::new(|rt: &mut Runtime, _kb: &wl_keyboard::WlKeyboard, event: KeyEvent| rt.on_key(event, true)),
                 ) {
                     Ok(k) => self.keyboard = Some(k),
                     Err(e) => eprintln!("lumen-ui: keyboard: {e}"),
@@ -809,7 +824,7 @@ impl KeyboardHandler for Runtime {
 
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, serial: u32, event: KeyEvent) {
         self.last_serial = serial;
-        self.on_key(event);
+        self.on_key(event, false);
     }
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
@@ -981,3 +996,18 @@ delegate_xdg_window!(Runtime);
 delegate_data_device!(Runtime);
 delegate_primary_selection!(Runtime);
 delegate_registry!(Runtime);
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn us_key_names() {
+        use super::us_char;
+        assert_eq!(us_char(31), Some('s'), "KEY_S");
+        assert_eq!(us_char(16), Some('q'));
+        assert_eq!(us_char(11), Some('0'));
+        assert_eq!(us_char(53), Some('/'));
+        assert_eq!(us_char(43), Some('\\'));
+        assert_eq!(us_char(28), None, "Enter is not a character");
+        assert_eq!(us_char(1), None);
+    }
+}

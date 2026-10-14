@@ -63,7 +63,9 @@ impl Dialog {
         scrim.sense = Sense { click: true, blocking: true, ..Sense::NONE };
         scrim.deco.bg = t.scrim.fade(appear.clamp(0.0, 1.0));
         ui.overlay(scrim_id, Anchor::Fill, false, scrim, |_| {});
-        let mut card = Node::new(Layout::column().width(Size::Px(self.width)).padding(24.0).gap(16.0));
+        // Never wider than the window (minus the overlay margins).
+        let width = self.width.min(ui.window_size().x - 16.0).max(200.0);
+        let mut card = Node::new(Layout::column().width(Size::Px(width)).padding(24.0).gap(16.0));
         card.id = Some(id);
         card.sense = Sense::BLOCK;
         card.kind = "dialog";

@@ -191,6 +191,11 @@ impl Lumen {
         if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
             send_frames(surface, output, time);
         }
+        for x in &self.wm.overrides {
+            if let Some(surface) = x.wl_surface() {
+                send_frames(&surface, output, time);
+            }
+        }
         if let Some(icon) = &self.dnd_icon {
             send_frames(icon, output, time);
         }

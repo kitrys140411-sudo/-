@@ -171,6 +171,7 @@ pub struct Lumen {
     pub lid_closed: bool,
     /// When suspend was last requested (boot clock, includes time asleep).
     pub last_suspend: Option<Duration>,
+    pub xwayland: crate::xwayland::XwaylandState,
 }
 
 impl Lumen {
@@ -211,6 +212,7 @@ impl Lumen {
         let xdg_activation_state = XdgActivationState::new::<Lumen>(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Lumen>(&dh);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Lumen>(&dh);
+        let xwayland = crate::xwayland::XwaylandState::new(smithay::wayland::xwayland_shell::XWaylandShellState::new::<Lumen>(&dh));
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_pointer();
@@ -301,6 +303,7 @@ impl Lumen {
             battery_warned: Default::default(),
             lid_closed: false,
             last_suspend: None,
+            xwayland,
         }
     }
 
@@ -352,6 +355,8 @@ impl Lumen {
             }
         }
         tracing::info!("first frame presented");
+        // X11 support starts once the desktop is on screen (off the boot path).
+        self.lh.insert_idle(|state| state.start_xwayland());
         for (title, body) in std::mem::take(&mut self.startup_notices) {
             self.notify(&title, &body);
         }

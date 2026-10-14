@@ -120,6 +120,29 @@ icons! {
     Backspace => "backspace",
     Maximize => "maximize",
     Restore => "restore",
+    Bluetooth => "bluetooth",
+    WifiOff => "wifi-off",
+    WifiWeak => "wifi-weak",
+    WifiMedium => "wifi-medium",
+    Ethernet => "ethernet",
+    Headphones => "headphones",
+    Microphone => "microphone",
+    MicrophoneOff => "microphone-off",
+    FolderNew => "folder-new",
+    FileNew => "file-new",
+    Link => "link",
+    Globe => "globe",
+    Mouse => "mouse",
+    Sliders => "sliders",
+    Memory => "memory",
+    Thermometer => "thermometer",
+    Chart => "chart",
+    Archive => "archive",
+    History => "history",
+    Plug => "plug",
+    CheckCircle => "check-circle",
+    Brightness => "brightness",
+    Gamepad => "gamepad",
 }
 
 /// Path commands in grid units (24 × 24, y down). Angles are degrees,
@@ -254,6 +277,40 @@ impl Pen<'_> {
     fn dot(&mut self, x: f32, y: f32, r: f32) {
         self.fill(&[Circle(x, y, r)]);
     }
+
+    /// Stroke open contours at reduced coverage: the "inactive" parts of
+    /// level icons (signal bars) in a one-color symbolic icon.
+    fn faint(&mut self, cmds: &[C]) {
+        let m = self.path(cmds).stroke(self.lib, self.px, self.px, self.width, false);
+        self.add(m.into_iter().map(|v| (v as u32 * 3 / 10) as u8).collect());
+    }
+}
+
+/// The three arcs and the dot of the Wi-Fi icons; `level` arcs (0–3) are
+/// drawn solid, the rest faint.
+fn wifi(p: &mut Pen, level: usize) {
+    for (i, (r, a0, a1)) in [(5.0, 225.0, 315.0), (9.5, 225.0, 315.0), (14.0, 228.0, 312.0)].into_iter().enumerate() {
+        let arc = [A(12.0, 19.0, r, a0, a1)];
+        if i < level {
+            p.line(&arc);
+        } else {
+            p.faint(&arc);
+        }
+    }
+    p.dot(12.0, 19.0, 1.6);
+}
+
+/// A diagonal slash from the top left to the bottom right that cuts what is
+/// below it (the "off" variants).
+fn slash(p: &mut Pen) {
+    p.cut(&[M(2.0, 3.5), L(3.5, 2.0), L(22.0, 20.5), L(20.5, 22.0), Z]);
+    p.line(&[M(4.0, 4.0), L(20.0, 20.0)]);
+}
+
+fn microphone(p: &mut Pen) {
+    p.outline(&[RRect(9.0, 3.0, 6.0, 11.0, 3.0)]);
+    p.line(&[A(12.0, 10.5, 6.5, 0.0, 180.0)]);
+    p.line(&[M(12.0, 17.0), L(12.0, 20.5), M(8.5, 20.5), L(15.5, 20.5)]);
 }
 
 /// A closed star outline (`points` tips).
@@ -471,12 +528,12 @@ pub fn rasterize(lib: &Rc<Library>, icon: Icon, px: u32) -> Vec<u8> {
             p.outline(&[Circle(12.0, 12.0, 9.0), Ellipse(12.0, 12.0, 4.0, 9.0)]);
             p.line(&[M(3.0, 12.0), L(21.0, 12.0)]);
         }
-        Icon::Wifi => {
-            for r in [5.0, 9.5] {
-                p.line(&[A(12.0, 19.0, r, 225.0, 315.0)]);
-            }
-            p.line(&[A(12.0, 19.0, 14.0, 228.0, 312.0)]);
-            p.dot(12.0, 19.0, 1.6);
+        Icon::Wifi => wifi(&mut p, 3),
+        Icon::WifiMedium => wifi(&mut p, 2),
+        Icon::WifiWeak => wifi(&mut p, 1),
+        Icon::WifiOff => {
+            wifi(&mut p, 3);
+            slash(&mut p);
         }
         Icon::Volume => {
             speaker(&mut p);
@@ -586,8 +643,7 @@ pub fn rasterize(lib: &Rc<Library>, icon: Icon, px: u32) -> Vec<u8> {
             p.outline(&[M(2.5, 12.0), Q(7.0, 5.0, 12.0, 5.0), Q(17.0, 5.0, 21.5, 12.0), Q(17.0, 19.0, 12.0, 19.0), Q(7.0, 19.0, 2.5, 12.0), Z]);
             p.outline(&[Circle(12.0, 12.0, 3.0)]);
             if icon == Icon::EyeOff {
-                p.cut(&[M(2.0, 3.5), L(3.5, 2.0), L(22.0, 20.5), L(20.5, 22.0), Z]);
-                p.line(&[M(4.0, 4.0), L(20.0, 20.0)]);
+                slash(&mut p);
             }
         }
         Icon::Filter => p.outline(&[M(3.5, 5.0), L(20.5, 5.0), L(14.0, 12.5), L(14.0, 19.0), L(10.0, 17.0), L(10.0, 12.5), Z]),
@@ -674,6 +730,95 @@ pub fn rasterize(lib: &Rc<Library>, icon: Icon, px: u32) -> Vec<u8> {
         Icon::Backspace => {
             p.outline(&[M(8.0, 5.0), L(20.0, 5.0), Q(21.5, 5.0, 21.5, 6.5), L(21.5, 17.5), Q(21.5, 19.0, 20.0, 19.0), L(8.0, 19.0), L(2.5, 12.0), Z]);
             p.line(&[M(11.5, 9.5), L(16.5, 14.5), M(16.5, 9.5), L(11.5, 14.5)]);
+        }
+        Icon::Bluetooth => p.line(&[M(6.5, 7.5), L(17.0, 16.0), L(12.0, 20.5), L(12.0, 3.5), L(17.0, 8.0), L(6.5, 16.5)]),
+        Icon::Ethernet => {
+            p.outline(&[RRect(9.0, 3.0, 6.0, 5.0, 1.0), RRect(3.0, 16.0, 6.0, 5.0, 1.0), RRect(15.0, 16.0, 6.0, 5.0, 1.0)]);
+            p.line(&[M(12.0, 8.0), L(12.0, 12.0), M(6.0, 16.0), L(6.0, 12.0), L(18.0, 12.0), L(18.0, 16.0)]);
+        }
+        Icon::Headphones => {
+            p.line(&[M(4.0, 15.0), L(4.0, 12.5), A(12.0, 12.5, 8.0, 180.0, 360.0), L(20.0, 15.0)]);
+            p.outline(&[RRect(3.0, 13.5, 5.0, 7.0, 1.5), RRect(16.0, 13.5, 5.0, 7.0, 1.5)]);
+        }
+        Icon::Microphone => microphone(&mut p),
+        Icon::MicrophoneOff => {
+            microphone(&mut p);
+            slash(&mut p);
+        }
+        Icon::FolderNew => {
+            p.outline(&[M(3.0, 6.5), Q(3.0, 5.0, 4.5, 5.0), L(9.0, 5.0), L(11.0, 7.0), L(19.5, 7.0), Q(21.0, 7.0, 21.0, 8.5), L(21.0, 17.5), Q(21.0, 19.0, 19.5, 19.0), L(4.5, 19.0), Q(3.0, 19.0, 3.0, 17.5), Z]);
+            p.line(&[M(12.0, 10.0), L(12.0, 16.0), M(9.0, 13.0), L(15.0, 13.0)]);
+        }
+        Icon::FileNew => {
+            file(&mut p);
+            p.line(&[M(12.0, 11.5), L(12.0, 17.5), M(9.0, 14.5), L(15.0, 14.5)]);
+        }
+        Icon::Link => {
+            p.line(&[M(10.5, 8.5), L(6.0, 8.5), A(6.0, 12.0, 3.5, 270.0, 90.0), L(10.5, 15.5)]);
+            p.line(&[M(13.5, 8.5), L(18.0, 8.5), A(18.0, 12.0, 3.5, -90.0, 90.0), L(13.5, 15.5)]);
+            p.line(&[M(9.0, 12.0), L(15.0, 12.0)]);
+        }
+        Icon::Globe => {
+            p.outline(&[Circle(12.0, 12.0, 9.0), Ellipse(12.0, 12.0, 4.0, 9.0)]);
+            p.line(&[M(3.5, 9.0), L(20.5, 9.0), M(3.5, 15.0), L(20.5, 15.0)]);
+        }
+        Icon::Mouse => {
+            p.outline(&[RRect(6.5, 3.0, 11.0, 18.0, 5.5)]);
+            p.line(&[M(12.0, 6.5), L(12.0, 9.5)]);
+        }
+        Icon::Sliders => {
+            for (y, x) in [(6.5, 15.0), (12.0, 8.0), (17.5, 13.0)] {
+                p.line(&[M(4.0, y), L(20.0, y)]);
+                p.cut(&[Circle(x, y, 3.4)]);
+                p.outline(&[Circle(x, y, 2.2)]);
+            }
+        }
+        Icon::Memory => {
+            p.outline(&[RRect(3.0, 6.0, 18.0, 10.5, 1.5)]);
+            p.outline(&[RRect(6.5, 9.0, 3.5, 4.5, 0.5), RRect(14.0, 9.0, 3.5, 4.5, 0.5)]);
+            for x in [6.5, 10.0, 14.0, 17.5] {
+                p.line(&[M(x, 16.5), L(x, 19.5)]);
+            }
+        }
+        Icon::Thermometer => {
+            let a = (2.5f32 / 4.0).acos().to_degrees();
+            let meet = 17.5 - 4.0 * a.to_radians().sin();
+            p.outline(&[M(9.5, meet), L(9.5, 5.5), A(12.0, 5.5, 2.5, 180.0, 360.0), L(14.5, meet), A(12.0, 17.5, 4.0, -a, 180.0 + a), Z]);
+            p.dot(12.0, 17.5, 1.6);
+            p.line(&[M(12.0, 16.0), L(12.0, 10.0)]);
+        }
+        Icon::Chart => p.line(&[M(4.0, 20.0), L(20.0, 20.0), M(7.0, 16.5), L(7.0, 12.0), M(12.0, 16.5), L(12.0, 5.5), M(17.0, 16.5), L(17.0, 9.5)]),
+        Icon::Archive => {
+            p.outline(&[RRect(3.0, 4.0, 18.0, 5.0, 1.2)]);
+            p.line(&[M(5.0, 9.0), L(5.0, 18.5), Q(5.0, 20.0, 6.5, 20.0), L(17.5, 20.0), Q(19.0, 20.0, 19.0, 18.5), L(19.0, 9.0)]);
+            p.line(&[M(10.0, 13.0), L(14.0, 13.0)]);
+        }
+        Icon::History => {
+            circular_arrow(&mut p, 12.0, 12.0, 7.5, 135.0, -160.0);
+            p.line(&[M(12.0, 7.5), L(12.0, 12.0), L(15.0, 14.0)]);
+        }
+        Icon::Plug => {
+            p.line(&[M(9.0, 3.5), L(9.0, 7.5), M(15.0, 3.5), L(15.0, 7.5)]);
+            p.outline(&[M(6.0, 7.5), L(18.0, 7.5), L(18.0, 11.0), Q(18.0, 16.0, 12.0, 16.0), Q(6.0, 16.0, 6.0, 11.0), Z]);
+            p.line(&[M(12.0, 16.0), L(12.0, 20.5)]);
+        }
+        Icon::CheckCircle => {
+            p.outline(&[Circle(12.0, 12.0, 9.0)]);
+            p.line(&[M(8.0, 12.5), L(11.0, 15.5), L(16.5, 9.5)]);
+        }
+        Icon::Brightness => {
+            p.outline(&[Circle(12.0, 12.0, 4.0)]);
+            p.fill(&[A(12.0, 12.0, 4.0, 270.0, 90.0), Z]);
+            for i in 0..8 {
+                let a = i as f32 * PI / 4.0;
+                p.line(&[M(12.0 + 7.0 * a.cos(), 12.0 + 7.0 * a.sin()), L(12.0 + 9.5 * a.cos(), 12.0 + 9.5 * a.sin())]);
+            }
+        }
+        Icon::Gamepad => {
+            p.outline(&[RRect(2.5, 7.0, 19.0, 10.5, 5.0)]);
+            p.line(&[M(6.5, 12.25), L(10.5, 12.25), M(8.5, 10.25), L(8.5, 14.25)]);
+            p.dot(15.5, 11.0, 1.3);
+            p.dot(17.8, 13.5, 1.3);
         }
         Icon::Maximize => p.outline(&[RRect(5.5, 5.5, 13.0, 13.0, 2.0)]),
         Icon::Restore => {

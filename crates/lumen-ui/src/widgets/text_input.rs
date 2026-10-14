@@ -155,6 +155,9 @@ impl<'a> TextInput<'a> {
 
         // Keyboard.
         let mut submitted = false;
+        if focused && ui.keys_allowed() {
+            ui.mark_text_focus();
+        }
         if focused {
             ui.consume_keys(|ui, k| {
                 let used = key(ui, id, k, text, &mut st.edit, password);
@@ -393,6 +396,29 @@ fn key(ui: &mut Ui, id: Id, k: &KeyPress, text: &mut String, e: &mut EditState, 
         },
     }
     true
+}
+
+/// Put the cursor (and selection) of the input `id` at byte offsets
+/// `anchor..cursor`, e.g. to preselect the name part of "Untitled.txt"
+/// before focusing it with [`Ui::request_focus`]. The selection is kept when
+/// the focus arrives.
+pub fn select_range(ui: &mut Ui, id: Id, anchor: usize, cursor: usize) {
+    let st = ui.state::<InputState>(id);
+    st.edit.move_to(anchor, false);
+    st.edit.move_to(cursor, true);
+    st.was_focused = true;
+}
+
+/// Keys a focused input uses for editing (see [`Ui::shortcut`]).
+pub(crate) fn is_editing_key(key: Key, m: Mods) -> bool {
+    let plain = !m.command();
+    match key {
+        Key::Left | Key::Right | Key::Home | Key::End | Key::Backspace | Key::Delete => !m.alt && !m.logo,
+        Key::Char(c) if plain => !c.is_control(),
+        Key::Char('a' | 'c' | 'x' | 'v' | 'z' | 'y') => m == Mods::CTRL || (m == Mods::CTRL_SHIFT && key == Key::Char('z')),
+        Key::Insert => m == Mods::SHIFT,
+        _ => false,
+    }
 }
 
 /// What is drawn: the text, or a bullet per grapheme.

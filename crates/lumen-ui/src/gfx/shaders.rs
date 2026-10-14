@@ -27,7 +27,7 @@ void main() {
 
 /// Shape kinds (`params.y`, see `RectInst`): fill (rounded), undercurl,
 /// dotted, dashed, square outline, fade, rounded border, soft shadow,
-/// gradient, line segment, arc.
+/// gradient, line segment, arc, area column.
 pub const RECT_FS: &str = r#"
 in vec2 v_local;
 flat in vec2 v_size;
@@ -98,6 +98,18 @@ void main() {
         float h = clamp(dot(v_local - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
         float d = length(v_local - a - ab * h) - v_params.x * 0.5;
         cov = clamp(0.5 - d, 0.0, 1.0);
+    } else if (kind > 10.5) {
+        // Area column (one pixel wide): filled below the edge from local y
+        // = x at the left side to z at the right side; the coverage of this
+        // pixel row is the edge's average over four positions across the
+        // column. The alpha fades from 1 at the top of the quad to w at its
+        // bottom (graph fills).
+        float c = 0.0;
+        for (int i = 0; i < 4; i++) {
+            float ey = mix(v_params.x, v_params.z, (float(i) + 0.5) * 0.25);
+            c += clamp(v_local.y + 0.5 - ey, 0.0, 1.0);
+        }
+        cov = c * 0.25 * mix(1.0, v_params.w, clamp(v_local.y / max(v_size.y, 1.0), 0.0, 1.0));
     } else {
         // Arc of a ring of thickness x inside the quad, starting at angle z
         // (radians, clockwise from 12 o'clock) and sweeping w radians.

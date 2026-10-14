@@ -22,6 +22,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 
 use crate::backlight::BrightnessCmd;
+use crate::focus::FocusTarget;
 use crate::keybind::{is_modifier_key, KeySyms, Mods};
 use crate::state::Lumen;
 use crate::volume::VolumeCmd;
@@ -340,8 +341,12 @@ impl Lumen {
         c.args(args)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env("XDG_SESSION_TYPE", "wayland")
-            .env("LUMEN_IPC", crate::ipc::socket_path())
-            .env_remove("DISPLAY");
+            .env("LUMEN_IPC", crate::ipc::socket_path());
+        // Our Xwayland, never the X server of a parent session (nested runs).
+        match self.xwayland.display_env() {
+            Some(d) => c.env("DISPLAY", d),
+            None => c.env_remove("DISPLAY"),
+        };
         // The session sets it (lumen.service); a compositor started by hand still names itself.
         if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
             c.env("XDG_CURRENT_DESKTOP", "Lumen");
@@ -408,6 +413,7 @@ impl Lumen {
             self.wm.surface_under(pos).map(|(_, s, loc)| (s, loc))
         };
         self.note_pointer_target(&under);
+        let under = under.map(|(s, loc)| (FocusTarget::Surface(s), loc));
         pointer.motion(self, under.clone(), &MotionEvent { location: pos, serial, time });
         if let Some((delta, delta_unaccel, utime)) = relative {
             pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel, utime });
@@ -432,6 +438,7 @@ impl Lumen {
         self.note_pointer_target(&under);
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.now().as_millis() as u32;
+        let under = under.map(|(s, loc)| (FocusTarget::Surface(s), loc));
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
         pointer.frame(self);
     }
@@ -472,7 +479,10 @@ impl Lumen {
             }
             let logo = self.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo);
             let under = self.wm.window_under(self.pointer_pos);
-            if let Some(id) = under {
+            if self.wm.override_under(self.pointer_pos) {
+                // An X11 menu or tooltip: it belongs to the focused app, which
+                // keeps the focus.
+            } else if let Some(id) = under {
                 self.focus_window(Some(id));
                 if logo && (button == BTN_LEFT || button == BTN_RIGHT) {
                     if button == BTN_LEFT {
@@ -533,12 +543,18 @@ impl Lumen {
 
     // -- interactive move / resize -----------------------------------------------------
 
-    /// Client-initiated move (title bar drag): only valid while a button is held.
-    pub fn start_move_grab(&mut self, id: u32, serial: Serial) {
+    /// Client-initiated move (title bar drag): only valid while a button is
+    /// held, the press of `serial` (xdg) or any press (X11 has no serials).
+    pub fn start_move_grab(&mut self, id: u32, serial: Option<Serial>) {
         let Some(pointer) = self.seat.get_pointer() else { return };
-        if !pointer.has_grab(serial) {
+        let held = match serial {
+            Some(serial) => pointer.has_grab(serial),
+            None => pointer.grab_start_data().is_some(),
+        };
+        if !held {
             return;
         }
+        let serial = serial.unwrap_or_else(|| SERIAL_COUNTER.next_serial());
         let button = pointer.grab_start_data().map(|d| d.button).unwrap_or(BTN_LEFT);
         // Dragging a maximized/tiled window restores it under the pointer.
         if let Some(w) = self.wm.get(id) {
@@ -560,11 +576,16 @@ impl Lumen {
         self.begin_move(id, button);
     }
 
-    pub fn start_resize_grab(&mut self, id: u32, serial: Serial, left: bool, right: bool, top: bool, bottom: bool) {
+    pub fn start_resize_grab(&mut self, id: u32, serial: Option<Serial>, left: bool, right: bool, top: bool, bottom: bool) {
         let Some(pointer) = self.seat.get_pointer() else { return };
-        if !pointer.has_grab(serial) {
+        let held = match serial {
+            Some(serial) => pointer.has_grab(serial),
+            None => pointer.grab_start_data().is_some(),
+        };
+        if !held {
             return;
         }
+        let serial = serial.unwrap_or_else(|| SERIAL_COUNTER.next_serial());
         let button = pointer.grab_start_data().map(|d| d.button).unwrap_or(BTN_LEFT);
         pointer.unset_grab(self, serial, 0);
         self.begin_resize(id, button, left, right, top, bottom);

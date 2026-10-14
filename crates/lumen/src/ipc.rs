@@ -22,6 +22,7 @@
 //!   reload-input             re-read input.toml (layouts, touchpad, mouse)
 //!   layout <n>               make keyboard layout n (0-based) active
 //!   switch lid closed|open   a laptop lid switch event (as from libinput)
+//!   xwayland                 X11 support: display, readiness, cost, override-redirect windows (JSON)
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -178,6 +179,7 @@ impl Lumen {
                 Err(e) => format!("error {}", e.replace('\n', "; ")),
             },
             ("input", []) => self.ipc_input(),
+            ("xwayland", []) => self.ipc_xwayland(),
             ("reload-input", []) => match self.reload_input() {
                 Ok(summary) => format!("ok {summary}"),
                 Err(e) => format!("error {}", e.replace('\n', "; ")),
@@ -348,7 +350,7 @@ impl Lumen {
                     Layout::Fullscreen { .. } => "fullscreen",
                 };
                 format!(
-                    "{{\"id\":{},\"title\":{},\"app_id\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"ws\":{},\"mapped\":{},\"focused\":{},\"layout\":\"{}\",\"animating\":{}}}",
+                    "{{\"id\":{},\"title\":{},\"app_id\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"ws\":{},\"mapped\":{},\"focused\":{},\"layout\":\"{}\",\"animating\":{},\"x11\":{},\"parent\":{}}}",
                     w.id,
                     json_str(&w.title()),
                     json_str(&w.app_id()),
@@ -361,6 +363,8 @@ impl Lumen {
                     self.wm.focused == Some(w.id),
                     layout,
                     !w.pos.is_settled() || !w.open.is_settled() || w.morph.is_some() || w.pending_morph.is_some(),
+                    w.x11().is_some(),
+                    self.wm.parent_of(w.id).map(|p| p.to_string()).unwrap_or_else(|| "null".into()),
                 )
             })
             .collect();
@@ -466,6 +470,42 @@ impl Lumen {
             self.lid_closed,
             self.render.icons.pending(),
             self.bindings_json(),
+        )
+    }
+
+    fn ipc_xwayland(&self) -> String {
+        let x = &self.xwayland;
+        let opt = |v: Option<String>| v.unwrap_or_else(|| "null".into());
+        let overrides: Vec<String> = self
+            .wm
+            .overrides
+            .iter()
+            .map(|o| {
+                let g = o.geometry();
+                format!(
+                    "{{\"title\":{},\"class\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"has_surface\":{}}}",
+                    json_str(&o.title()),
+                    json_str(&o.class()),
+                    g.loc.x,
+                    g.loc.y,
+                    g.size.w,
+                    g.size.h,
+                    o.wl_surface().is_some()
+                )
+            })
+            .collect();
+        format!(
+            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"overrides\":[{}]}}",
+            x.enabled,
+            x.ready,
+            opt(x.display_env().map(|d| json_str(&d))),
+            opt(x.pid.map(|p| p.to_string())),
+            opt(x.ready_after.map(|d| d.as_millis().to_string())),
+            opt(x.rss_kib().map(|k| k.to_string())),
+            x.failures,
+            opt(x.error.as_deref().map(json_str)),
+            self.x11_focused(),
+            overrides.join(","),
         )
     }
 

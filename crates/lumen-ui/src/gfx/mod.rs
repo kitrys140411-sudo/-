@@ -163,6 +163,7 @@ pub const KIND_SHADOW: f32 = 7.0;
 pub const KIND_GRADIENT: f32 = 8.0;
 pub const KIND_LINE: f32 = 9.0;
 pub const KIND_ARC: f32 = 10.0;
+pub const KIND_AREA: f32 = 11.0;
 
 impl RectInst {
     pub fn fill(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> RectInst {
@@ -210,6 +211,15 @@ impl RectInst {
     /// o'clock) over `sweep` radians.
     pub fn arc(cx: f32, cy: f32, r: f32, thickness: f32, start: f32, sweep: f32, color: [f32; 4]) -> RectInst {
         RectInst { rect: [cx - r, cy - r, 2.0 * r, 2.0 * r], color, params: [thickness, KIND_ARC, start, sweep] }
+    }
+
+    /// One pixel column (`x`, from `top` down to `bottom`) of the area under
+    /// a line: filled below the edge that goes from `y0` at the column's
+    /// left side to `y1` at its right side (absolute y), with the alpha
+    /// fading to `end` toward `bottom`. Graph fills are runs of these, so
+    /// neighboring columns meet exactly at pixel boundaries (no seams).
+    pub fn area_column(x: f32, top: f32, bottom: f32, y0: f32, y1: f32, end: f32, color: [f32; 4]) -> RectInst {
+        RectInst { rect: [x, top, 1.0, (bottom - top).max(0.0)], color, params: [y0 - top, KIND_AREA, y1 - top, end] }
     }
 }
 

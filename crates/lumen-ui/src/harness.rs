@@ -47,7 +47,13 @@ pub struct WidgetInfo {
     pub value: Option<String>,
     pub focused: bool,
     pub hovered: bool,
+    /// Overlay layer (0 is the window content; menus, dialogs, tooltips and
+    /// toasts are drawn above it in higher layers).
+    pub layer: u32,
 }
+
+/// Kinds of overlay surfaces that hide what is below them.
+const SURFACES: [&str; 4] = ["menu", "dialog", "toast", "tooltip"];
 
 pub struct Harness {
     ui: Ui,
@@ -110,8 +116,8 @@ impl Harness {
         let tree = &self.ui.tree;
         let size = self.ui.window.size;
         let mut out = Vec::new();
-        let mut stack: Vec<(u32, Rect)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.x, size.y))).collect();
-        while let Some((i, clip)) = stack.pop() {
+        let mut stack: Vec<(u32, Rect, u32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.x, size.y), r.layer)).collect();
+        while let Some((i, clip, layer)) = stack.pop() {
             let n = &tree.nodes[i as usize];
             let r = n.rect.intersect(&clip);
             if let Some(label) = &n.label {
@@ -123,13 +129,14 @@ impl Harness {
                         value: n.value.clone(),
                         focused: n.id.is_some() && n.id == self.ui.input.focus,
                         hovered: n.id.is_some() && n.id == self.ui.input.hovered,
+                        layer,
                     });
                 }
             }
             let clip = if n.clip { clip.intersect(&n.rect) } else { clip };
             let kids: Vec<u32> = tree.children(i).collect();
             for c in kids.into_iter().rev() {
-                stack.push((c, clip));
+                stack.push((c, clip, layer));
             }
         }
         out
@@ -140,11 +147,20 @@ impl Harness {
         self.widgets().into_iter().rev().find(|w| w.label == label)
     }
 
+    /// Where a user would click `label`: the center of its visible part.
+    /// Panics when there is no such widget, or when a menu, dialog, toast or
+    /// tooltip of a higher layer covers that point (the click would land on
+    /// the overlay, which is never what a test means).
     fn center(&self, label: &str) -> Vec2 {
-        match self.widget(label) {
-            Some(w) => w.rect.center(),
-            None => panic!("no widget {label:?}; visible: {:?}", self.widgets().iter().map(|w| &w.label).collect::<Vec<_>>()),
+        let all = self.widgets();
+        let Some(w) = all.iter().rev().find(|w| w.label == label) else {
+            panic!("no widget {label:?}; visible: {:?}", all.iter().map(|w| &w.label).collect::<Vec<_>>());
+        };
+        let p = w.rect.center();
+        if let Some(cover) = all.iter().find(|o| o.layer > w.layer && SURFACES.contains(&o.kind) && o.rect.contains(p)) {
+            panic!("widget {label:?} at {p:?} is covered by the {} {:?}", cover.kind, cover.label);
         }
+        p
     }
 
     pub fn move_to(&mut self, p: Vec2) {
@@ -395,17 +411,20 @@ mod tests {
     fn menus_open_choose_and_close() {
         let Some(mut h) = harness() else { return };
         let mut app = F(None::<&'static str>, |picked: &mut Option<&'static str>, ui: &mut Ui| {
-            ui.menu_button(Icon::Menu, "main", |m| {
-                if m.item("Copy") {
-                    *picked = Some("Copy");
-                }
-                if m.item("Paste") {
-                    *picked = Some("Paste");
+            // "Behind" sits next to the menu button, outside the open menu.
+            ui.row(|ui| {
+                ui.menu_button(Icon::Menu, "main", |m| {
+                    if m.item("Copy") {
+                        *picked = Some("Copy");
+                    }
+                    if m.item("Paste") {
+                        *picked = Some("Paste");
+                    }
+                });
+                if ui.button("Behind").clicked {
+                    *picked = Some("Behind");
                 }
             });
-            if ui.button("Behind").clicked {
-                *picked = Some("Behind");
-            }
         });
         h.frame(&mut app);
         h.click("menu");

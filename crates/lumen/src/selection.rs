@@ -22,13 +22,15 @@ use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimaryDeviceManagerGlobalData, PrimaryDeviceUserData, PrimarySelectionState, PrimarySourceUserData,
 };
 
+use smithay::wayland::seat::WaylandFocus;
+
 use crate::state::Lumen;
 
 impl Lumen {
     /// Offer the selections again if `client` has keyboard focus.
     fn reoffer_selection(&mut self, dh: &DisplayHandle, client: &Client) {
         let focused = self.seat.get_keyboard().and_then(|k| k.current_focus());
-        let has_focus = focused.and_then(|s| dh.get_client(s.id()).ok()).is_some_and(|c| &c == client);
+        let has_focus = focused.and_then(|f| f.wl_surface().map(|s| s.into_owned())).and_then(|s| dh.get_client(s.id()).ok()).is_some_and(|c| &c == client);
         if has_focus {
             let seat = self.seat.clone();
             set_data_device_focus(dh, &seat, None);

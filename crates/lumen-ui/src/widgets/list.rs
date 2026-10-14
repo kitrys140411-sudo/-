@@ -185,13 +185,14 @@ pub struct ListView {
     row_height: f32,
     cell_width: Option<f32>,
     multi: bool,
+    reveal: Option<usize>,
     layout: Layout,
 }
 
 impl ListView {
     /// `count` rows of `row_height`; `key` identifies the list.
     pub fn new(key: impl Hash, count: usize, row_height: f32) -> ListView {
-        ListView { key: Id(0).with(key), count, row_height, cell_width: None, multi: true, layout: Layout::default().size(Size::FILL, Size::FILL) }
+        ListView { key: Id(0).with(key), count, row_height, cell_width: None, multi: true, reveal: None, layout: Layout::default().size(Size::FILL, Size::FILL) }
     }
 
     /// A grid of `cell_width` × `row_height` cells instead (as many columns
@@ -203,6 +204,14 @@ impl ListView {
     /// Only one item can be selected.
     pub fn single_selection(mut self) -> ListView {
         self.multi = false;
+        self
+    }
+
+    /// Scroll (animated) so that item `index` is visible, e.g. after the app
+    /// selected it (type-ahead find, "reveal in folder"). Pass it for one
+    /// frame; the list keeps scrolling there by itself.
+    pub fn reveal(mut self, index: Option<usize>) -> ListView {
+        self.reveal = index;
         self
     }
 
@@ -301,6 +310,11 @@ impl ListView {
                 let r = g.rect(to);
                 ui.scroll_state(scroll_id).reveal_y(r.y - pad, r.bottom() + pad, v.h);
             }
+        }
+
+        if let (Some(i), Some(v)) = (self.reveal.filter(|&i| i < self.count), vp_rect) {
+            let r = g.rect(i);
+            ui.scroll_state(scroll_id).reveal_y(r.y - pad, r.bottom() + pad, v.h);
         }
 
         // Rubber band on empty space.

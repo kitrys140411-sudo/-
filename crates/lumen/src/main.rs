@@ -8,6 +8,7 @@ mod background;
 mod backlight;
 mod cursor;
 mod cursor_art;
+mod focus;
 mod handlers;
 mod icons;
 mod icontheme;
@@ -27,6 +28,7 @@ mod theme;
 mod vector;
 mod volume;
 mod wm;
+mod xwayland;
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::process::ExitCode;
@@ -50,7 +52,8 @@ const USAGE: &str = "usage: lumen [--backend auto|udev|winit|headless] [--size W
 environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_INPUT (input.toml), LUMEN_FAVORITES,
              LUMEN_SCALE, LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS/MODEL (override input.toml),
              XCURSOR_THEME, XCURSOR_SIZE, LUMEN_INIT_CONTROL (init's socket), LUMEN_SYSFS (/sys for batteries
-             and backlights), LUMEN_POWER_POLL_MS, LUMEN_OUTPUT_NAME (headless output name)";
+             and backlights), LUMEN_POWER_POLL_MS, LUMEN_OUTPUT_NAME (headless output name),
+             LUMEN_XWAYLAND=0 (no X11 support)";
 
 struct Args {
     backend: String,

@@ -25,6 +25,16 @@ pub struct CursorFrame {
     pub delay: Duration,
 }
 
+/// A cursor image for X clients: premultiplied ARGB32 in X's byte order
+/// (B, G, R, A).
+pub struct X11Cursor {
+    pub bgra: Vec<u8>,
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+}
+
 pub struct CursorTheme {
     theme: Option<xcursor::CursorTheme>,
     /// Nominal size in logical pixels.
@@ -160,6 +170,37 @@ impl CursorTheme {
     /// Whether `name` animates (at any scale it was loaded for).
     pub fn is_animated(&self, name: &str) -> bool {
         self.cache.iter().any(|((n, _), f)| n == name && f.len() > 1)
+    }
+
+    /// The arrow X windows show when they set no cursor of their own.
+    /// Xwayland runs at client scale 1, so it is made at the nominal size.
+    pub fn x11_default(&self) -> Option<X11Cursor> {
+        if let Some(theme) = self.theme.as_ref() {
+            let path = std::iter::once("default").chain(alternatives("default").iter().copied()).find_map(|n| theme.load_icon(n));
+            let images = path.and_then(|p| std::fs::read(p).ok()).and_then(|d| xcursor::parser::parse_xcursor(&d));
+            if let Some(img) = images.as_ref().and_then(|v| v.iter().min_by_key(|i| (i.size as i64 - self.size as i64).abs())) {
+                // The parser's "rgba" bytes already are X's B, G, R, A.
+                return Some(X11Cursor {
+                    bgra: img.pixels_rgba.clone(),
+                    width: img.width as u16,
+                    height: img.height as u16,
+                    hot_x: img.xhot as u16,
+                    hot_y: img.yhot as u16,
+                });
+            }
+        }
+        let art = cursor_art::draw(self.lib.as_ref()?, "default", self.size, 0.0);
+        let mut bgra = art.rgba;
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        Some(X11Cursor {
+            bgra,
+            width: art.size as u16,
+            height: art.size as u16,
+            hot_x: art.hotspot.0.max(0) as u16,
+            hot_y: art.hotspot.1.max(0) as u16,
+        })
     }
 
     /// Frames of Lumen's vector cursor for `name`.

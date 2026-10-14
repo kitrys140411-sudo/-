@@ -30,3 +30,9 @@ RUN cd /tmp/tc && rustup toolchain install && rustc --version \
 # FreeType/HarfBuzz development files for text rendering in the shell and the
 # terminal. A separate layer keeps the toolchain layers above cached.
 RUN apk add --no-cache mesa-egl mesa-gles mesa-gbm mesa-dri-gallium freetype-dev harfbuzz-dev font-noto-emoji
+
+# XWayland and small X11 clients for the compositor's X11 tests (window
+# management, clipboard bridging, override-redirect popups): xterm and xeyes
+# map ordinary windows, xprop/xwininfo/xdotool inspect and drive them, xclip
+# and xsel own and read X selections. Not part of the image's rootfs.
+RUN apk add --no-cache xwayland xterm xeyes xprop xwininfo xdpyinfo xdotool xclip xsel

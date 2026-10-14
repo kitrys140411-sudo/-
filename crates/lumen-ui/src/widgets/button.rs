@@ -36,6 +36,7 @@ pub struct Button {
     enabled: bool,
     toggled: Option<bool>,
     round: bool,
+    tooltip: Option<String>,
     layout: Layout,
 }
 
@@ -44,12 +45,12 @@ pub const CONTROL_HEIGHT: f32 = 32.0;
 
 impl Button {
     pub fn new(label: impl Into<String>) -> Button {
-        Button { label: Some(label.into()), icon: None, style: ButtonStyle::Normal, key: None, enabled: true, toggled: None, round: false, layout: Layout::row() }
+        Button { label: Some(label.into()), icon: None, style: ButtonStyle::Normal, key: None, enabled: true, toggled: None, round: false, tooltip: None, layout: Layout::row() }
     }
 
     /// An icon-only button (flat by default).
     pub fn icon_only(icon: Icon) -> Button {
-        Button { label: None, icon: Some(icon), style: ButtonStyle::Flat, key: None, enabled: true, toggled: None, round: false, layout: Layout::row() }
+        Button { label: None, icon: Some(icon), style: ButtonStyle::Flat, key: None, enabled: true, toggled: None, round: false, tooltip: None, layout: Layout::row() }
     }
 
     /// A leading icon.
@@ -90,6 +91,13 @@ impl Button {
     /// Fully rounded (pill or circle).
     pub fn round(mut self) -> Button {
         self.round = true;
+        self
+    }
+
+    /// A tooltip shown after hovering a moment (icon-only buttons should
+    /// always have one).
+    pub fn tooltip(mut self, text: impl Into<String>) -> Button {
+        self.tooltip = Some(text.into());
         self
     }
 
@@ -169,6 +177,9 @@ impl Button {
         if r.clicked {
             ui.log(&format!("click {name}"));
         }
+        if let Some(tip) = &self.tooltip {
+            r.tooltip(ui, tip);
+        }
         r
     }
 }
@@ -193,6 +204,11 @@ impl Ui {
     /// A flat icon-only button (toolbars, header bars).
     pub fn icon_button(&mut self, icon: Icon) -> Response {
         Button::icon_only(icon).show(self)
+    }
+
+    /// A flat icon-only button with a tooltip naming its action.
+    pub fn tool_button(&mut self, icon: Icon, tooltip: &str) -> Response {
+        Button::icon_only(icon).tooltip(tooltip).show(self)
     }
 
     /// Add any widget builder.

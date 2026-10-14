@@ -193,6 +193,48 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Fill the area between the line through `pts` (ordered by x) and the
+    /// horizontal line `base_y`, anti-aliased along the top edge; the alpha
+    /// goes from `color`'s at the top of the area to `color`'s × `end_alpha`
+    /// at `base_y` (1 for a flat fill). Graphs: `area` under a `polyline`.
+    pub fn area(&mut self, pts: &[Vec2], base_y: f32, color: Color, end_alpha: f32) {
+        if color.is_transparent() || pts.len() < 2 {
+            return;
+        }
+        let c = self.color(color);
+        let phys: Vec<(f32, f32)> = pts.iter().map(|&p| self.phys(p)).collect();
+        let (_, base) = self.phys(Vec2::new(0.0, base_y));
+        let top = phys.iter().map(|p| p.1).fold(base, f32::min).floor();
+        let x0 = phys[0].0.round();
+        let x1 = phys[phys.len() - 1].0.round();
+        // Only the columns inside the clip need instances.
+        let cx0 = self.clip.x as f32;
+        let cx1 = (self.clip.x + self.clip.w) as f32;
+        let (from, to) = (x0.max(cx0), x1.min(cx1));
+        if to <= from || base <= top {
+            return;
+        }
+        let mut seg = 0;
+        let mut y_at = |x: f32| -> f32 {
+            while seg + 2 < phys.len() && phys[seg + 1].0 < x {
+                seg += 1;
+            }
+            let (a, b) = (phys[seg], phys[seg + 1]);
+            if b.0 <= a.0 {
+                return b.1;
+            }
+            a.1 + (b.1 - a.1) * ((x - a.0) / (b.0 - a.0)).clamp(0.0, 1.0)
+        };
+        let mut x = from;
+        let mut left = y_at(x);
+        while x < to {
+            let right = y_at(x + 1.0);
+            self.push(Prim::Rect(RectInst::area_column(x, top, base, left.min(base), right.min(base), end_alpha, c)));
+            left = right;
+            x += 1.0;
+        }
+    }
+
     /// An arc of the ring at `center` (outer radius `radius`, `thickness`),
     /// from `start` radians clockwise from 12 o'clock over `sweep` radians.
     pub fn arc(&mut self, center: Vec2, radius: f32, thickness: f32, start: f32, sweep: f32, color: Color) {

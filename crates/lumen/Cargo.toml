@@ -9,7 +9,7 @@ license.workspace = true
 lumen-text = { path = "../lumen-text" }
 smithay = { version = "0.7.0", default-features = false, features = [
     "backend_drm", "backend_gbm", "backend_egl", "backend_libinput", "backend_udev",
-    "backend_session_libseat", "backend_winit", "renderer_gl", "desktop", "wayland_frontend",
+    "backend_session_libseat", "backend_winit", "renderer_gl", "desktop", "wayland_frontend", "xwayland",
 ] }
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }

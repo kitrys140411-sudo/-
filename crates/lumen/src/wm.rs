@@ -7,10 +7,13 @@
 
 use std::time::Duration;
 
+use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::{Window, WindowSurfaceType};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::seat::WaylandFocus;
+use smithay::xwayland::X11Surface;
 
 use crate::anim::{Spring, Spring2, SpringParams};
 use crate::render::elements::Shape;
@@ -77,6 +80,10 @@ pub struct Win {
     pub requested_size: Option<Size<i32, Logical>>,
     pub pending_morph: Option<PendingMorph>,
     pub morph: Option<Morph>,
+    /// The position was chosen before the first buffer (X11 windows are
+    /// placed when they ask to be mapped, so the X server knows where they
+    /// are before they draw).
+    pub placed: bool,
 }
 
 impl Win {
@@ -95,8 +102,14 @@ impl Win {
         self.pos.snap(self.target.x, self.target.y);
     }
 
-    pub fn surface(&self) -> &WlSurface {
-        self.window.toplevel().expect("wayland window").wl_surface()
+    /// The window's main surface. X11 windows only have one once Xwayland
+    /// has associated it with the X window.
+    pub fn surface(&self) -> Option<WlSurface> {
+        self.window.wl_surface().map(|s| s.into_owned())
+    }
+
+    pub fn x11(&self) -> Option<&X11Surface> {
+        self.window.x11_surface()
     }
 
     pub fn size(&self) -> Size<i32, Logical> {
@@ -114,6 +127,9 @@ impl Win {
     }
 
     pub fn title(&self) -> String {
+        if let Some(x) = self.x11() {
+            return x.title();
+        }
         self.window
             .toplevel()
             .and_then(|t| {
@@ -126,7 +142,13 @@ impl Win {
             .unwrap_or_default()
     }
 
+    /// The xdg app id, or for X11 windows the WM_CLASS class (what desktop
+    /// files name in StartupWMClass), falling back to the instance name.
     pub fn app_id(&self) -> String {
+        if let Some(x) = self.x11() {
+            let class = x.class();
+            return if class.is_empty() { x.instance() } else { class };
+        }
         self.window
             .toplevel()
             .and_then(|t| {
@@ -164,6 +186,10 @@ pub struct Grab {
 
 pub struct Wm {
     pub windows: Vec<Win>,
+    /// X11 override-redirect windows (menus, tooltips, drag icons), bottom to
+    /// top. Not managed: they sit where the X client put them, above every
+    /// managed window.
+    pub overrides: Vec<X11Surface>,
     pub closing: Vec<Closing>,
     pub current: usize,
     /// Animated workspace position (fractional while switching).
@@ -185,6 +211,7 @@ impl Wm {
         let a = &theme.animation;
         Wm {
             windows: Vec::new(),
+            overrides: Vec::new(),
             closing: Vec::new(),
             current: 0,
             ws_anim: Spring::new(0.0, theme.spring(a.workspace, 0.0005)),
@@ -219,6 +246,7 @@ impl Wm {
             requested_size: None,
             pending_morph: None,
             morph: None,
+            placed: false,
         });
         id
     }
@@ -235,11 +263,33 @@ impl Wm {
         self.windows.iter_mut().find(|w| w.id == id)
     }
 
+    /// The window whose main surface is `surface` (Wayland or X11).
     pub fn find_toplevel(&self, surface: &WlSurface) -> Option<u32> {
         self.windows
             .iter()
-            .find(|w| w.window.toplevel().is_some_and(|t| t.wl_surface() == surface))
+            .find(|w| match w.window.toplevel() {
+                Some(t) => t.wl_surface() == surface,
+                None => w.window.wl_surface().is_some_and(|s| *s == *surface),
+            })
             .map(|w| w.id)
+    }
+
+    /// The managed window of an X11 window. Compared by X window id:
+    /// `X11Surface` equality fails once the window is destroyed.
+    pub fn find_x11(&self, x: &X11Surface) -> Option<u32> {
+        self.windows.iter().find(|w| w.x11().is_some_and(|o| same_x11(o, x))).map(|w| w.id)
+    }
+
+    /// The window `id` is a dialog of: the xdg parent or the X11
+    /// WM_TRANSIENT_FOR window.
+    pub fn parent_of(&self, id: u32) -> Option<u32> {
+        let w = self.get(id)?;
+        if let Some(x) = w.x11() {
+            let parent = x.is_transient_for()?;
+            return self.windows.iter().find(|o| o.x11().is_some_and(|p| p.window_id() == parent)).map(|o| o.id);
+        }
+        let parent = w.window.toplevel()?.parent()?;
+        self.find_toplevel(&parent)
     }
 
     /// Choose an initial position: centered in the work area, cascaded away
@@ -267,6 +317,20 @@ impl Wm {
         (x.round(), y.round()).into()
     }
 
+    /// Where a new window of `size` goes: dialogs centered over their parent,
+    /// other windows by [`Wm::place`].
+    pub fn place_window(&self, id: u32, size: Size<i32, Logical>, work: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+        if let Some(parent) = self.parent_of(id).and_then(|p| self.get(p)).filter(|p| p.mapped) {
+            let pg = parent.target_geo();
+            let x = pg.loc.x + (pg.size.w - size.w as f64) / 2.0;
+            let y = pg.loc.y + (pg.size.h - size.h as f64) / 2.0;
+            let x = x.min(work.loc.x + work.size.w - size.w as f64).max(work.loc.x);
+            let y = y.min(work.loc.y + work.size.h - size.h as f64).max(work.loc.y);
+            return (x.round(), y.round()).into();
+        }
+        self.place(size, work, self.current)
+    }
+
     pub fn map(&mut self, id: u32, work: Rectangle<f64, Logical>) {
         let current = self.current;
         let size = match self.get(id) {
@@ -275,8 +339,8 @@ impl Wm {
         };
         // A window that asked for a layout (fullscreen, maximized) before its
         // first buffer is already placed by that layout.
-        let floating = self.get(id).is_some_and(|w| matches!(w.layout, Layout::Floating));
-        let loc = if floating { self.place(size, work, current) } else { self.get(id).map(|w| w.target).unwrap_or_default() };
+        let floating = self.get(id).is_some_and(|w| matches!(w.layout, Layout::Floating) && !w.placed);
+        let loc = if floating { self.place_window(id, size, work) } else { self.get(id).map(|w| w.target).unwrap_or_default() };
         if let Some(w) = self.get_mut(id) {
             w.mapped = true;
             w.ws = current;
@@ -288,11 +352,29 @@ impl Wm {
         }
     }
 
-    /// Move a window to the top of the stacking order.
+    /// Move a window to the top of the stacking order, with its dialogs
+    /// (and theirs) above it in their current order.
     pub fn raise(&mut self, id: u32) {
-        if let Some(i) = self.index_of(id) {
-            let w = self.windows.remove(i);
-            self.windows.push(w);
+        let mut group = vec![id];
+        let mut i = 0;
+        while i < group.len() {
+            let parent = group[i];
+            for w in &self.windows {
+                if !group.contains(&w.id) && self.parent_of(w.id) == Some(parent) {
+                    group.push(w.id);
+                }
+            }
+            i += 1;
+        }
+        // The raised window first, then its dialogs bottom to top.
+        let order: Vec<u32> = std::iter::once(id)
+            .chain(self.windows.iter().map(|w| w.id).filter(|w| *w != id && group.contains(w)))
+            .collect();
+        for wid in order {
+            if let Some(i) = self.index_of(wid) {
+                let w = self.windows.remove(i);
+                self.windows.push(w);
+            }
         }
     }
 
@@ -366,11 +448,44 @@ impl Wm {
         if let Some(w) = self.get_mut(id) {
             // An explicit position (drags) replaces a pending morph.
             w.pending_morph = None;
+            let moved = w.target != loc;
             w.target = loc;
             if animate {
                 w.pos.set_target(loc.x, loc.y);
             } else {
                 w.pos.snap(loc.x, loc.y);
+            }
+            // X clients position their menus from where the X server thinks
+            // their window is: keep it in sync with ours.
+            if moved && w.x11().is_some() {
+                self.configure_x11(id);
+            }
+        }
+    }
+
+    /// Send an X11 window its geometry and states: the target position (or,
+    /// during a top/left resize, where the anchored corner puts it), the
+    /// requested size, and the maximized/fullscreen flags.
+    pub fn configure_x11(&mut self, id: u32) {
+        let Some(w) = self.get(id) else { return };
+        let Some(x) = w.x11() else { return };
+        if !x.alive() || x.is_override_redirect() {
+            return;
+        }
+        let size = w.requested_size.unwrap_or_else(|| x.geometry().size);
+        let loc = match w.resize_anchor {
+            Some((anchor, left, top)) => Point::from((
+                if left { anchor.x - size.w as f64 } else { w.target.x },
+                if top { anchor.y - size.h as f64 } else { w.target.y },
+            )),
+            None => w.target,
+        };
+        let rect = Rectangle::new(loc.to_i32_round(), size);
+        let _ = x.set_maximized(matches!(w.layout, Layout::Maximized { .. } | Layout::Tiled { .. }));
+        let _ = x.set_fullscreen(matches!(w.layout, Layout::Fullscreen { .. }));
+        if x.geometry() != rect {
+            if let Err(e) = x.configure(rect) {
+                tracing::debug!("X11 configure failed: {e}");
             }
         }
     }
@@ -379,6 +494,10 @@ impl Wm {
     pub fn configure(&mut self, id: u32, size: Option<Size<i32, Logical>>, maximized: bool, fullscreen: bool, tiled: Option<Tile>) {
         let Some(w) = self.get_mut(id) else { return };
         w.requested_size = size;
+        if w.x11().is_some() {
+            self.configure_x11(id);
+            return;
+        }
         let Some(t) = w.window.toplevel() else { return };
         t.with_pending_state(|s| {
             s.size = size;
@@ -445,7 +564,9 @@ impl Wm {
             let from_square = w.is_square();
             w.layout = layout;
             w.resize_anchor = None;
-            if w.mapped && size != w.size() {
+            // X11 windows report the new size at once (it is the X geometry,
+            // not the client's buffer), so they cannot wait for it: they slide.
+            if w.mapped && size != w.size() && w.x11().is_none() {
                 // Stay put until the client has a buffer of the new size, then
                 // stretch from where the window is drawn now.
                 let from = if w.morph.is_some() { w.last_drawn.unwrap_or_else(|| w.geo()) } else { w.geo() };
@@ -454,10 +575,10 @@ impl Wm {
                 morph = true;
             }
         }
-        self.configure(id, Some(size), max, full, tile);
         if !morph {
             self.set_target(id, rect.loc, true);
         }
+        self.configure(id, Some(size), max, full, tile);
     }
 
     pub fn any_animating(&self) -> bool {
@@ -495,7 +616,10 @@ impl Wm {
     }
 
     /// The window and surface under a global logical point (current workspace).
-    pub fn surface_under(&self, p: Point<f64, Logical>) -> Option<(u32, WlSurface, Point<f64, Logical>)> {
+    pub fn surface_under(&self, p: Point<f64, Logical>) -> Option<(Option<u32>, WlSurface, Point<f64, Logical>)> {
+        if let Some((surface, loc)) = self.override_surface_under(p) {
+            return Some((None, surface, loc));
+        }
         for w in self.windows.iter().rev() {
             if !w.mapped || w.ws != self.current || w.open.target == 0.0 {
                 continue;
@@ -503,10 +627,30 @@ impl Wm {
             let geo = w.geo();
             let render_loc = geo.loc - w.window.geometry().loc.to_f64();
             if let Some((surface, loc)) = w.window.surface_under(p - render_loc, WindowSurfaceType::ALL) {
-                return Some((w.id, surface, loc.to_f64() + render_loc));
+                return Some((Some(w.id), surface, loc.to_f64() + render_loc));
             }
         }
         None
+    }
+
+    /// The override-redirect window (X11 menu, tooltip) under a point.
+    pub fn override_surface_under(&self, p: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        for x in self.overrides.iter().rev() {
+            let geo = x.geometry().to_f64();
+            if !geo.contains(p) {
+                continue;
+            }
+            let Some(surface) = x.wl_surface() else { continue };
+            if let Some((s, loc)) = under_from_surface_tree(&surface, p - geo.loc, (0, 0), WindowSurfaceType::ALL) {
+                return Some((s, loc.to_f64() + geo.loc));
+            }
+        }
+        None
+    }
+
+    /// Whether an override-redirect window (an X11 menu) is under a point.
+    pub fn override_under(&self, p: Point<f64, Logical>) -> bool {
+        self.override_surface_under(p).is_some()
     }
 
     /// Window (not surface) under a point, by geometry only.
@@ -517,4 +661,9 @@ impl Wm {
             .find(|w| w.mapped && w.ws == self.current && w.geo().contains(p))
             .map(|w| w.id)
     }
+}
+
+/// The same X11 window (by id, even after it was destroyed).
+pub fn same_x11(a: &X11Surface, b: &X11Surface) -> bool {
+    a.window_id() == b.window_id() && a.xwm_id() == b.xwm_id()
 }

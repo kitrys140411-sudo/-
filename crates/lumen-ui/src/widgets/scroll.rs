@@ -405,9 +405,11 @@ fn scrollbars(ui: &mut Ui, id: Id, ax: bool, ay: bool) {
 }
 
 impl Ui {
-    /// A vertical scroll area filling the available space.
+    /// A vertical scroll area filling the available space; its content is
+    /// a column with the theme's grid gap, like [`Ui::column`].
     pub fn scroll<R>(&mut self, f: impl FnOnce(&mut Ui) -> R) -> R {
-        ScrollArea::vertical().show(self, f)
+        let gap = self.theme.grid;
+        ScrollArea::vertical().gap(gap).show(self, f)
     }
 
     pub(crate) fn scroll_state(&mut self, id: Id) -> &mut ScrollState {

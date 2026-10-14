@@ -23,7 +23,8 @@ use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleH
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler};
 use smithay::wayland::selection::primary_selection::{set_primary_focus, PrimarySelectionHandler, PrimarySelectionState};
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
@@ -36,6 +37,9 @@ use smithay::{
 };
 use smithay::backend::allocator::dmabuf::Dmabuf;
 
+use std::os::fd::OwnedFd;
+
+use crate::focus::FocusTarget;
 use crate::state::{ClientState, Lumen};
 use crate::wm::Layout;
 
@@ -49,6 +53,9 @@ impl CompositorHandler for Lumen {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(x) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &x.compositor_state;
+        }
         &client.get_data::<ClientState>().expect("unknown client data").compositor_state
     }
 
@@ -87,6 +94,12 @@ impl Lumen {
     fn on_window_commit(&mut self, id: u32, is_root: bool) {
         let Some(win) = self.wm.get(id) else { return };
         win.window.on_commit();
+        if win.x11().is_some() {
+            if is_root {
+                self.on_x11_commit(id);
+            }
+            return;
+        }
         let Some(toplevel) = win.window.toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
             // Let the client choose its size (capabilities: the shell's defaults).
@@ -118,6 +131,50 @@ impl Lumen {
         } else if mapped {
             self.on_window_resized(id);
         }
+    }
+
+    /// An X11 window's surface committed: it is shown with its first buffer.
+    /// (Its size is the X geometry we configured, not the buffer's, so there
+    /// is nothing to re-place on later commits.)
+    fn on_x11_commit(&mut self, id: u32) {
+        let Some(w) = self.wm.get(id) else { return };
+        let Some(surface) = w.surface() else { return };
+        let has_buffer = with_renderer_surface_state(&surface, |s| s.buffer().is_some()).unwrap_or(false);
+        if w.mapped || !has_buffer {
+            return;
+        }
+        use smithay::xwayland::xwm::WmWindowType as T;
+        let takes_focus = !matches!(w.x11().and_then(|x| x.window_type()), Some(T::Tooltip | T::Notification | T::Splash));
+        let work = self.work_area();
+        self.wm.map(id, work);
+        if takes_focus {
+            self.focus_window(Some(id));
+        } else {
+            self.wm.raise(id);
+            self.x11_restack();
+        }
+        self.refresh_pointer_focus();
+        self.shell.on_windows_changed();
+        tracing::info!(id, title = %self.wm.get(id).map(|w| w.title()).unwrap_or_default(), "X11 window mapped");
+    }
+
+    /// A window is gone for good (destroyed, or an X11 window unmapped):
+    /// animate it out and pass focus on.
+    pub fn window_gone(&mut self, id: u32) {
+        if self.wm.get(id).is_some_and(|w| w.mapped) {
+            self.close_animation(id);
+        }
+        let was_focused = self.wm.focused == Some(id);
+        self.wm.remove(id);
+        self.render.last_window.remove(&id);
+        self.layouts.forget(id);
+        if was_focused {
+            let next = self.wm.mru.iter().copied().find(|i| self.wm.get(*i).is_some_and(|w| w.mapped && w.ws == self.wm.current));
+            self.focus_window(next);
+        }
+        self.refresh_pointer_focus();
+        self.shell.on_windows_changed();
+        self.queue_redraw_all();
     }
 
     /// Keep the right edges anchored during top/left resizes; clamp new windows.
@@ -183,13 +240,14 @@ impl Lumen {
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         if let Some(id) = id {
             self.wm.raise(id);
+            self.x11_restack();
         }
         let previous = self.wm.focused;
         let changed = self.wm.set_focused(id);
         if changed {
             // Popups (menus) of the window losing focus close, and their
             // keyboard grab ends before focus moves on.
-            if let Some(old) = previous.and_then(|p| self.wm.get(p)).map(|w| w.surface().clone()) {
+            if let Some(old) = previous.and_then(|p| self.wm.get(p)).and_then(|w| w.surface()) {
                 for (popup, _) in PopupManager::popups_for_surface(&old) {
                     let _ = PopupManager::dismiss_popup(&old, &popup);
                 }
@@ -210,12 +268,12 @@ impl Lumen {
                 }
             }
         }
-        let surface = id.and_then(|id| self.wm.get(id)).map(|w| w.surface().clone());
+        let target = id.and_then(|id| self.wm.get(id)).and_then(crate::xwayland::focus_for);
         if let Some(kb) = self.seat.get_keyboard() {
             if self.shell.wants_keyboard() {
                 kb.set_focus(self, None, serial);
             } else {
-                kb.set_focus(self, surface, serial);
+                kb.set_focus(self, target, serial);
                 // Per-window keyboard layouts follow the focus.
                 if let Some(id) = id {
                     self.restore_window_layout(id);
@@ -229,8 +287,14 @@ impl Lumen {
     }
 
     pub fn close_window(&mut self, id: u32) {
-        if let Some(t) = self.wm.get(id).and_then(|w| w.window.toplevel().cloned()) {
+        let Some(w) = self.wm.get(id) else { return };
+        if let Some(t) = w.window.toplevel() {
             t.send_close();
+        } else if let Some(x) = w.x11() {
+            // WM_DELETE_WINDOW, or XDestroyWindow for clients without it.
+            if let Err(e) = x.close() {
+                tracing::warn!("cannot close X11 window: {e}");
+            }
         }
     }
 }
@@ -280,7 +344,7 @@ impl XdgShellHandler for Lumen {
 
     fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
         if let Some(id) = self.wm.find_toplevel(surface.wl_surface()) {
-            self.start_move_grab(id, serial);
+            self.start_move_grab(id, Some(serial));
         }
     }
 
@@ -298,7 +362,7 @@ impl XdgShellHandler for Lumen {
                 E::BottomRight => (false, true, false, true),
                 _ => return,
             };
-            self.start_resize_grab(id, serial, left, right, top, bottom);
+            self.start_resize_grab(id, Some(serial), left, right, top, bottom);
         }
     }
 
@@ -307,12 +371,12 @@ impl XdgShellHandler for Lumen {
         let kind = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&kind) else { return };
         // Only the focused window may grab input for its popups.
-        let focused = self.wm.focused.and_then(|id| self.wm.get(id)).map(|w| w.surface().clone());
+        let focused = self.wm.focused.and_then(|id| self.wm.get(id)).and_then(|w| w.surface());
         if focused.as_ref() != Some(&root) {
             let _ = PopupManager::dismiss_popup(&root, &kind);
             return;
         }
-        let Ok(mut grab) = self.popups.grab_popup::<Lumen>(root, kind, &seat, serial) else { return };
+        let Ok(mut grab) = self.popups.grab_popup::<Lumen>(FocusTarget::Surface(root), kind, &seat, serial) else { return };
         if let Some(kb) = seat.get_keyboard() {
             if kb.is_grabbed() && !(kb.has_grab(serial) || kb.has_grab(grab.previous_serial().unwrap_or(serial))) {
                 grab.ungrab(PopupUngrabStrategy::All);
@@ -370,19 +434,7 @@ impl XdgShellHandler for Lumen {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let Some(id) = self.wm.find_toplevel(surface.wl_surface()) else { return };
-        if self.wm.get(id).is_some_and(|w| w.mapped) {
-            self.close_animation(id);
-        }
-        let was_focused = self.wm.focused == Some(id);
-        self.wm.remove(id);
-        self.layouts.forget(id);
-        if was_focused {
-            let next = self.wm.mru.iter().copied().find(|i| self.wm.get(*i).is_some_and(|w| w.mapped && w.ws == self.wm.current));
-            self.focus_window(next);
-        }
-        self.refresh_pointer_focus();
-        self.shell.on_windows_changed();
-        self.queue_redraw_all();
+        self.window_gone(id);
     }
 
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
@@ -439,16 +491,16 @@ impl XdgDecorationHandler for Lumen {
 }
 
 impl SeatHandler for Lumen {
-    type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
+    type KeyboardFocus = FocusTarget;
+    type PointerFocus = FocusTarget;
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<Lumen> {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let client = focused.and_then(|s| self.dh.get_client(s.id()).ok());
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&FocusTarget>) {
+        let client = focused.and_then(|f| f.wl_surface()).and_then(|s| self.dh.get_client(s.id()).ok());
         set_data_device_focus(&self.dh, seat, client.clone());
         set_primary_focus(&self.dh, seat, client);
     }
@@ -465,6 +517,25 @@ impl SeatHandler for Lumen {
 
 impl SelectionHandler for Lumen {
     type SelectionUserData = ();
+
+    /// A Wayland client set a selection: X clients see it through the X11
+    /// window manager, which becomes the X selection owner.
+    fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        if let Some(wm) = self.xwayland.wm.as_mut() {
+            if let Err(e) = wm.new_selection(ty, source.map(|s| s.mime_types())) {
+                tracing::warn!(?ty, "cannot pass the selection to X11: {e}");
+            }
+        }
+    }
+
+    /// A Wayland client reads the selection an X client owns.
+    fn send_selection(&mut self, ty: SelectionTarget, mime_type: String, fd: OwnedFd, _seat: Seat<Self>, _user_data: &()) {
+        if let Some(wm) = self.xwayland.wm.as_mut() {
+            if let Err(e) = wm.send_selection(ty, mime_type, fd, self.lh.clone()) {
+                tracing::warn!(?ty, "cannot read the X11 selection: {e}");
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for Lumen {
@@ -516,7 +587,7 @@ impl XdgActivationHandler for Lumen {
         // event it received since getting focus.
         let Some((serial, _seat)) = data.serial else { return false };
         let Some(kb) = self.seat.get_keyboard() else { return false };
-        let focused_client = kb.current_focus().and_then(|s| self.dh.get_client(s.id()).ok());
+        let focused_client = kb.current_focus().and_then(|f| f.wl_surface().map(|s| s.into_owned())).and_then(|s| self.dh.get_client(s.id()).ok());
         let requester = data.client_id.clone();
         if focused_client.map(|c| c.id()) != requester {
             return false;
@@ -566,3 +637,4 @@ delegate_xdg_activation!(Lumen);
 delegate_cursor_shape!(Lumen);
 delegate_single_pixel_buffer!(Lumen);
 delegate_dmabuf!(Lumen);
+smithay::delegate_xwayland_shell!(Lumen);
