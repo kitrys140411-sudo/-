@@ -419,6 +419,12 @@ impl Wm {
             .is_some_and(|w| matches!(w.layout, Layout::Fullscreen { .. }))
     }
 
+    /// An X11 override-redirect window covers `out`: an unmanaged
+    /// fullscreen game (SDL 1.2, some Wine games), drawn above everything.
+    pub fn covered_by_override(&self, out: Rectangle<f64, Logical>) -> bool {
+        self.overrides.iter().any(|o| o.wl_surface().is_some() && o.geometry().to_f64().contains_rect(out))
+    }
+
     /// Topmost mapped window on the current workspace (for focus fallback).
     pub fn top_on_current(&self) -> Option<u32> {
         self.windows.iter().rev().find(|w| w.mapped && w.ws == self.current).map(|w| w.id)

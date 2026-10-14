@@ -819,7 +819,7 @@ impl Lumen {
         hit.is_some()
             || self.shell.switcher.is_some()
             || self.shell.popover.as_ref().is_some_and(|p| p.open)
-            || (pos.y < out.loc.y + self.theme.geometry.panel_height && !self.wm.fullscreen_on_top())
+            || (pos.y < out.loc.y + self.theme.geometry.panel_height && !self.fullscreen_game())
     }
 
     /// Pointer button for the shell; returns true if it was consumed.

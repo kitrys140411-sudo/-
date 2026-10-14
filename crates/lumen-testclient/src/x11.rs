@@ -14,6 +14,7 @@
 //!   grab status=success|...                   --grab-pointer: the pointer grab after the first click
 //!   look dx=.. dy=..                          --grab-pointer: motion away from the center (then warped back)
 //!   titlebar event=move                       --titlebar: a press on the title strip asked the WM to move
+//!   grab keyboard status=success|...          --override-fullscreen: XGrabKeyboard once shown
 //!   closed                                    WM_DELETE_WINDOW from the window manager
 //!   exit reason=timeout|key
 
@@ -22,8 +23,8 @@ use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus, NotifyDetail,
-    PropMode, Rectangle, Window, WindowClass,
+    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode,
+    GrabStatus, NotifyDetail, PropMode, Rectangle, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -53,6 +54,17 @@ const POPUP_SIZE: (u16, u16) = (200, 120);
 const DIALOG_SIZE: (u16, u16) = (320, 200);
 /// X keycode of Escape (evdev KEY_ESC + 8).
 const KEYCODE_ESCAPE: u8 = 9;
+
+fn grab_status_name(status: GrabStatus) -> &'static str {
+    match status {
+        GrabStatus::SUCCESS => "success",
+        GrabStatus::ALREADY_GRABBED => "already-grabbed",
+        GrabStatus::INVALID_TIME => "invalid-time",
+        GrabStatus::NOT_VIEWABLE => "not-viewable",
+        GrabStatus::FROZEN => "frozen",
+        _ => "unknown",
+    }
+}
 
 fn pixel((r, g, b): (u8, u8, u8)) -> u32 {
     (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
@@ -208,15 +220,7 @@ impl Client {
             .map_err(err)?
             .reply()
             .map_err(|e| e.to_string())?;
-        let status = match reply.status {
-            GrabStatus::SUCCESS => "success",
-            GrabStatus::ALREADY_GRABBED => "already-grabbed",
-            GrabStatus::INVALID_TIME => "invalid-time",
-            GrabStatus::NOT_VIEWABLE => "not-viewable",
-            GrabStatus::FROZEN => "frozen",
-            _ => "unknown",
-        };
-        emit(&format!("grab status={status}"));
+        emit(&format!("grab status={}", grab_status_name(reply.status)));
         if reply.status == GrabStatus::SUCCESS {
             self.grabbed = true;
             let (cx, cy) = self.center();
@@ -252,7 +256,11 @@ pub fn run(opts: &Options) -> Result<u8, String> {
     let atoms = Atoms::new(&conn).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
     let gc = conn.generate_id().map_err(|e| e.to_string())?;
     conn.create_gc(gc, screen.root, &CreateGCAux::new().foreground(pixel(darker(opts.color)))).map_err(|e| e.to_string())?;
-    let size = (opts.size.0.min(u16::MAX as u32) as u16, opts.size.1.min(u16::MAX as u32) as u16);
+    let size = if opts.override_fullscreen {
+        (screen.width_in_pixels, screen.height_in_pixels)
+    } else {
+        (opts.size.0.min(u16::MAX as u32) as u16, opts.size.1.min(u16::MAX as u32) as u16)
+    };
     let mut c = Client {
         conn,
         root: screen.root,
@@ -272,6 +280,13 @@ pub fn run(opts: &Options) -> Result<u8, String> {
         let a = &c.atoms;
         c.conn
             .change_property32(PropMode::REPLACE, c.main, a._NET_WM_STATE, AtomEnum::ATOM, &[a._NET_WM_STATE_FULLSCREEN])
+            .map_err(|e| e.to_string())?;
+    }
+    if opts.override_fullscreen {
+        // Unmanaged and covering the screen, as SDL 1.2 and some Wine games
+        // do fullscreen: the window manager never sees the window.
+        c.conn
+            .change_window_attributes(c.main, &ChangeWindowAttributesAux::new().override_redirect(1))
             .map_err(|e| e.to_string())?;
     }
     c.conn.map_window(c.main).map_err(|e| e.to_string())?;
@@ -309,6 +324,15 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                         emit("ready");
                         if opts.dialog {
                             c.open_dialog(opts)?;
+                        }
+                        if opts.override_fullscreen {
+                            let reply = c
+                                .conn
+                                .grab_keyboard(false, c.main, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+                                .map_err(|e| e.to_string())?
+                                .reply()
+                                .map_err(|e| e.to_string())?;
+                            emit(&format!("grab keyboard status={}", grab_status_name(reply.status)));
                         }
                     }
                 } else if Some(e.window) == c.dialog {

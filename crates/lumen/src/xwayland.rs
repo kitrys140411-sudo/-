@@ -34,7 +34,7 @@ use smithay::desktop::Window;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::Client;
+use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::{Logical, Rectangle, Size};
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata, request_data_device_client_selection,
@@ -44,6 +44,10 @@ use smithay::wayland::selection::primary_selection::{
     clear_primary_selection, current_primary_selection_userdata, request_primary_client_selection, set_primary_selection,
 };
 use smithay::wayland::selection::SelectionTarget;
+use smithay::input::keyboard::KeyboardGrab;
+use smithay::input::Seat;
+use smithay::utils::SERIAL_COUNTER;
+use smithay::wayland::xwayland_keyboard_grab::{XWaylandKeyboardGrab, XWaylandKeyboardGrabHandler, XWaylandKeyboardGrabState};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, WmWindowType, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
@@ -58,6 +62,8 @@ const MAX_FAILURES: u32 = 3;
 pub struct XwaylandState {
     /// The xwayland_shell_v1 global (only Xwayland can bind it).
     pub shell: XWaylandShellState,
+    /// zwp_xwayland_keyboard_grab_manager_v1 (Xwayland only, too).
+    _keyboard_grab: XWaylandKeyboardGrabState,
     pub wm: Option<X11Wm>,
     /// Display number once Xwayland was spawned. X clients may connect from
     /// then on: they are accepted once the window manager is attached.
@@ -88,10 +94,11 @@ pub fn selection_index(ty: SelectionTarget) -> usize {
 }
 
 impl XwaylandState {
-    pub fn new(shell: XWaylandShellState) -> XwaylandState {
+    pub fn new(dh: &DisplayHandle) -> XwaylandState {
         let enabled = !matches!(std::env::var("LUMEN_XWAYLAND").as_deref(), Ok("0" | "off" | "false" | "no"));
         XwaylandState {
-            shell,
+            shell: XWaylandShellState::new::<Lumen>(dh),
+            _keyboard_grab: XWaylandKeyboardGrabState::new::<Lumen>(dh),
             wm: None,
             display: None,
             ready: false,
@@ -400,6 +407,36 @@ impl XWaylandShellHandler for Lumen {
 
     fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, _window: X11Surface) {
         self.queue_redraw_all();
+    }
+}
+
+/// An X client grabbed the keyboard (XGrabKeyboard) on a window whose
+/// surface does not have the keyboard focus, typically a game's fullscreen
+/// override-redirect window or a menu: Xwayland asks for the focus to stay on
+/// that surface. Compositor shortcuts still run first (Super escapes), and
+/// focusing another window ends the grab.
+impl XWaylandKeyboardGrabHandler for Lumen {
+    /// The focus moves now, not with the next key (smithay's default): the
+    /// first key press would otherwise arrive as already held in the enter
+    /// event, and X clients only see its release.
+    fn grab(&mut self, _surface: WlSurface, seat: Seat<Self>, grab: XWaylandKeyboardGrab<Self>) {
+        let Some(keyboard) = seat.get_keyboard() else { return };
+        let serial = SERIAL_COUNTER.next_serial();
+        let focus = grab.start_data().focus.clone();
+        if keyboard.is_grabbed() {
+            keyboard.unset_grab(self);
+        }
+        keyboard.set_focus(self, focus, serial);
+        keyboard.set_grab(self, grab, serial);
+        tracing::debug!("X11 keyboard grab");
+    }
+
+    fn keyboard_focus_for_xsurface(&self, surface: &WlSurface) -> Option<FocusTarget> {
+        if let Some(w) = self.wm.windows.iter().find(|w| w.x11().is_some() && w.surface().as_ref() == Some(surface)) {
+            return focus_for(w);
+        }
+        // An override-redirect window: its client's X grab routes the keys.
+        self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(surface)).then(|| FocusTarget::Surface(surface.clone()))
     }
 }
 

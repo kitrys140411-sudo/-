@@ -646,3 +646,4 @@ delegate_cursor_shape!(Lumen);
 delegate_single_pixel_buffer!(Lumen);
 delegate_dmabuf!(Lumen);
 smithay::delegate_xwayland_shell!(Lumen);
+smithay::delegate_xwayland_keyboard_grab!(Lumen);

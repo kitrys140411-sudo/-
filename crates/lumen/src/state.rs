@@ -235,7 +235,7 @@ impl Lumen {
         let relative_pointer_state = smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Lumen>(&dh);
         let shortcuts_inhibit_state = smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Lumen>(&dh);
         let idle_inhibit_state = smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Lumen>(&dh);
-        let xwayland = crate::xwayland::XwaylandState::new(smithay::wayland::xwayland_shell::XWaylandShellState::new::<Lumen>(&dh));
+        let xwayland = crate::xwayland::XwaylandState::new(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_pointer();

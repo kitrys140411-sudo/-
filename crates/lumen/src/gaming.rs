@@ -200,7 +200,7 @@ impl Lumen {
     /// inhibitor, or a fullscreen window on top (games and players that do
     /// not use the protocol, X11 ones included).
     pub fn idle_inhibited(&self) -> bool {
-        if self.wm.fullscreen_on_top() {
+        if self.fullscreen_game() {
             return true;
         }
         self.idle.inhibitors.iter().any(|s| {
@@ -210,6 +210,13 @@ impl Lumen {
                     || self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(&root))
             }
         })
+    }
+
+    /// A fullscreen window is on top, or an X11 override-redirect window
+    /// covers the primary output (older SDL and Wine games go fullscreen
+    /// that way, unmanaged).
+    pub fn fullscreen_game(&self) -> bool {
+        self.wm.fullscreen_on_top() || self.wm.covered_by_override(self.output_rect())
     }
 
     pub fn set_idle_timeout(&mut self, timeout: Option<Duration>) {

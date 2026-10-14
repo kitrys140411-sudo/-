@@ -188,9 +188,9 @@ pub fn overlay_elements(
     ctx.shell.hits.clear();
     let mut ui = Ui { r, ctx, out, scale, output: output.name(), elements, prog };
     let overview = ui.ctx.shell.overview_progress();
-    // A fullscreen window on top hides the panel and the dock (unless the
-    // overview is shown).
-    let fullscreen = overview <= 0.0 && ui.ctx.wm.fullscreen_on_top();
+    // A fullscreen window on top (or an unmanaged X11 game covering the
+    // output) hides the panel and the dock (unless the overview is shown).
+    let fullscreen = overview <= 0.0 && (ui.ctx.wm.fullscreen_on_top() || ui.ctx.wm.covered_by_override(out));
     if ui.ctx.shell.hud {
         hud(&mut ui);
     }

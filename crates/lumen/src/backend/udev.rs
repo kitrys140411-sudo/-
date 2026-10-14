@@ -602,7 +602,7 @@ fn scan_connectors(state: &mut Lumen) {
 
 fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
     let now = state.now();
-    let fullscreen = state.wm.fullscreen_on_top();
+    let fullscreen = state.fullscreen_game();
     let (output, target) = {
         let Backend::Udev(d) = &mut state.backend else { return };
         if d.blanked {

@@ -381,3 +381,32 @@ def test_x11_mouse_look(t):
     c.key("super")
     c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] is None, 10, "lock released")
     t.check(c.cursor()[2] != "hidden", c.cursor())
+
+
+def test_x11_unmanaged_fullscreen_game(t):
+    """SDL 1.2-style fullscreen: an override-redirect window covering the screen grabs
+    the keyboard. Xwayland asks for the focus (xwayland keyboard grab) so the keys reach
+    the game although the window manager never saw its window; it keeps the screen on."""
+    c = t.compositor()
+    other, _ = c.map_window("Wayland app", "--size", "400x300")
+    cl = x11_client(c, "--title", "XSdl", "--override-fullscreen", "--color", "#406080", name="sdl")
+    cl.wait_line(r"^ready")
+    cl.wait_line(r"^grab keyboard status=success")
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "fullscreen override window")
+    o = xinfo(c)["overrides"][0]
+    t.check((o["x"], o["y"], o["w"], o["h"]) == (0, 0, 1280, 800), o)
+    c.key("a")
+    cl.wait_line(r"^key code=38 state=pressed")
+    t.check(json.loads(c.ipc("idle"))["inhibited"], "a fullscreen X11 game keeps the screen on")
+    time.sleep(0.3)
+    img = c.screenshot("sdl")
+    r, g, b = img.mean(500, 300, 800, 500)
+    t.check(abs(r - 0x40) < 8 and abs(g - 0x60) < 8 and abs(b - 0x80) < 8, f"game not on top: {(r, g, b)}")
+    # The panel and the dock are hidden under it and take no clicks meant for the game.
+    hits = [h["hit"] for h in c.shell()["hits"]]
+    t.check(not any(h == "Power" or h.startswith("Dock") for h in hits), hits)
+    c.click(640, 790)
+    cl.wait_line(r"^button code=1 state=pressed x=640 y=790")
+    # Super still reaches the compositor.
+    c.key("super")
+    c.wait(lambda: c.shell()["overview"], 10, "overview over the game")

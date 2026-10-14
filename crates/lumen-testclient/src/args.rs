@@ -96,6 +96,8 @@ pub struct Options {
     pub primary: bool,
     /// X11: a press on the title strip starts a window move (_NET_WM_MOVERESIZE).
     pub titlebar: bool,
+    /// X11: an override-redirect window covering the screen that grabs the keyboard.
+    pub override_fullscreen: bool,
 }
 
 impl Default for Options {
@@ -126,6 +128,7 @@ impl Default for Options {
             grab_pointer: false,
             primary: false,
             titlebar: false,
+            override_fullscreen: false,
         }
     }
 }
@@ -173,6 +176,8 @@ usage: lumen-testclient [OPTIONS]
                          to the center after every motion)
   --titlebar             with --x11: a press on the title strip moves the window through the
                          window manager (_NET_WM_MOVERESIZE), like Steam's own title bar
+  --override-fullscreen  with --x11: an unmanaged (override-redirect) window covering the
+                         screen that grabs the keyboard, as SDL 1.2 games go fullscreen
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -260,7 +265,7 @@ where
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
             | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" | "--primary"
-            | "--titlebar" => {
+            | "--titlebar" | "--override-fullscreen" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -273,6 +278,7 @@ where
                     "--grab-pointer" => opts.grab_pointer = true,
                     "--primary" => opts.primary = true,
                     "--titlebar" => opts.titlebar = true,
+                    "--override-fullscreen" => opts.override_fullscreen = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -290,6 +296,9 @@ where
     }
     if opts.titlebar && !opts.x11 {
         return Err("--titlebar needs --x11".into());
+    }
+    if opts.override_fullscreen && !opts.x11 {
+        return Err("--override-fullscreen needs --x11".into());
     }
     Ok(Command::Run(opts))
 }
@@ -411,6 +420,8 @@ mod tests {
         assert!(run(&["--x11", "--grab-pointer"]).unwrap().grab_pointer);
         assert!(run(&["--titlebar"]).is_err());
         assert!(run(&["--x11", "--titlebar"]).unwrap().titlebar);
+        assert!(run(&["--override-fullscreen"]).is_err());
+        assert!(run(&["--x11", "--override-fullscreen"]).unwrap().override_fullscreen);
         assert!(run(&["--x11=1"]).is_err());
     }
 
