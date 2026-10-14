@@ -11,8 +11,8 @@
 //!
 //! Sending wakes the window, so the next `view` runs right away (the UI never
 //! polls on a timer for results). Values cross threads, so they must be
-//! `Send`: send decoded pixels as a `Vec<u8>` and make the [`crate::Image`]
-//! in the view.
+//! `Send`: send decoded [`crate::Pixels`] and make the [`crate::Image`] in
+//! the view.
 
 use std::sync::mpsc;
 

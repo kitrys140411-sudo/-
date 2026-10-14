@@ -18,5 +18,8 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 # Wayland client side: sctk (+ its calloop and xkbcommon integration) and
 # libwayland-egl for the EGL window surface. EGL/GLES bindings are our own.
 smithay-client-toolkit = "0.19.2"
+# Image decoding for apps (viewer, thumbnails): the common formats only, no
+# thread pool (apps decode on their own worker threads).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 wayland-egl = "0.32.11"
 wayland-backend = { version = "0.3", features = ["client_system"] }

@@ -32,7 +32,7 @@ pub use geom::{Insets, Rect, Vec2};
 pub use harness::{Harness, WidgetInfo};
 pub use icons::Icon;
 pub use id::Id;
-pub use image::Image;
+pub use crate::image::{is_image_file, Image, Pixels};
 pub use input::{Key, KeyPress, Mods, Shortcut};
 pub use layout::{Align, Justify, Layout, Size, Sizing};
 pub use paint::Painter;
@@ -49,7 +49,7 @@ pub mod prelude {
     pub use crate::files::{self, DirEntry, Place};
     pub use crate::widgets::*;
     pub use crate::{
-        channel, run, Align, Anchor, App, Color, CursorIcon, Icon, Id, Image, Insets, Justify, Key, KeyPress, Mods, Options, Painter, Rect,
+        channel, run, Align, Anchor, App, Color, CursorIcon, Icon, Id, Image, Insets, Pixels, Justify, Key, KeyPress, Mods, Options, Painter, Rect,
         Receiver, Response, Sender, Sense, Shortcut, Size, Sizing, Task, TextAlign, TextStyle, Theme, Ui, Vec2, Waker, Weight, Wrap,
     };
 }

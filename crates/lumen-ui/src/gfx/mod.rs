@@ -363,6 +363,9 @@ pub struct Renderer {
     next_texture: u32,
     /// Image textures created so far (see [`Atlas::uploads`]).
     pub texture_uploads: u64,
+    /// The largest texture side the GPU accepts (larger images are shrunk
+    /// before upload).
+    pub max_texture_size: u32,
     // Scratch arrays for draw lists (kept to avoid reallocating every frame).
     rects: Vec<RectInst>,
     glyphs: Vec<GlyphInst>,
@@ -447,6 +450,8 @@ impl Renderer {
             glGenFramebuffers(1, &mut fbo);
             let mut tex = 0;
             glGenTextures(1, &mut tex);
+            let mut max_tex = 0;
+            glGetIntegerv(GL_MAX_TEXTURE_SIZE, &mut max_tex);
             Ok(Renderer {
                 rect,
                 glyph,
@@ -466,6 +471,7 @@ impl Renderer {
                 textures: HashMap::new(),
                 next_texture: 1,
                 texture_uploads: 0,
+                max_texture_size: (max_tex.max(0) as u32).max(2048),
                 rects: Vec::new(),
                 glyphs: Vec::new(),
                 images: Vec::new(),
