@@ -341,6 +341,7 @@ fn acquire_buffer(
     buffers: &mut Vec<Buffer>,
     width: u32,
     height: u32,
+    format: wl_shm::Format,
 ) -> Result<Option<usize>, String> {
     let stride = width as i32 * 4;
     buffers.retain(|b| b.stride() == stride && b.height() == height as i32);
@@ -355,7 +356,7 @@ fn acquire_buffer(
             width as i32,
             height as i32,
             stride,
-            wl_shm::Format::Argb8888,
+            format,
         )
         .map_err(|e| format!("cannot create shm buffer: {e}"))?;
     buffers.push(buffer);
@@ -398,6 +399,12 @@ fn popup_color(fill: Rgb) -> Rgb {
 }
 
 impl App {
+    /// Buffers of the main surface: XRGB8888 tells the compositor the window
+    /// is opaque (what fullscreen direct scanout needs), as games' are.
+    fn buffer_format(&self) -> wl_shm::Format {
+        if self.opts.opaque { wl_shm::Format::Xrgb8888 } else { wl_shm::Format::Argb8888 }
+    }
+
     /// Buffer pixels per logical pixel, and the fractional scale (x120) when it is in use.
     fn scale(&self) -> (f64, Option<u32>) {
         match self.fractional {
@@ -438,7 +445,8 @@ impl App {
             return;
         }
         let (pw, ph) = self.buffer_size(self.size);
-        let idx = match acquire_buffer(&mut self.pool, &mut self.main.buffers, pw, ph) {
+        let format = self.buffer_format();
+        let idx = match acquire_buffer(&mut self.pool, &mut self.main.buffers, pw, ph, format) {
             Ok(Some(i)) => i,
             Ok(None) => {
                 // Both buffers are still held by the compositor: try again shortly.
@@ -533,7 +541,7 @@ impl App {
         let (pw, ph) = self.buffer_size(logical);
         let (scale, _) = self.scale();
         let p = self.popup.as_mut().expect("checked above");
-        let idx = match acquire_buffer(&mut self.pool, &mut p.target.buffers, pw, ph) {
+        let idx = match acquire_buffer(&mut self.pool, &mut p.target.buffers, pw, ph, wl_shm::Format::Argb8888) {
             Ok(Some(i)) => i,
             Ok(None) => {
                 p.dirty = true;

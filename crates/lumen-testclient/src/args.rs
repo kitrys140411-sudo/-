@@ -86,6 +86,8 @@ pub struct Options {
     pub idle_inhibit: bool,
     /// Ask for every key (zwp_keyboard_shortcuts_inhibitor_v1).
     pub inhibit_shortcuts: bool,
+    /// Opaque buffers (XRGB8888, like a game's swapchain) instead of ARGB8888.
+    pub opaque: bool,
 }
 
 impl Default for Options {
@@ -112,6 +114,7 @@ impl Default for Options {
             relative: false,
             idle_inhibit: false,
             inhibit_shortcuts: false,
+            opaque: false,
         }
     }
 }
@@ -147,6 +150,7 @@ usage: lumen-testclient [OPTIONS]
   --relative             print relative pointer motion (zwp_relative_pointer_v1)
   --idle-inhibit         keep the screen on while visible (zwp_idle_inhibit_manager_v1)
   --inhibit-shortcuts    receive every key (zwp_keyboard_shortcuts_inhibit_manager_v1)
+  --opaque               opaque XRGB8888 buffers (like a game's swapchain) instead of ARGB8888
   --x11                  be an X11 client on $DISPLAY (Xwayland) instead; uses --title,
                          --app-id (WM_CLASS), --size, --color, --maximize, --fullscreen,
                          --popup (an override-redirect menu at the click), --exit-after-ms,
@@ -238,7 +242,7 @@ where
                 opts.stripes = true;
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
-            | "--inhibit-shortcuts" => {
+            | "--inhibit-shortcuts" | "--opaque" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -247,6 +251,7 @@ where
                     "--confine-pointer" => opts.confine_pointer = true,
                     "--relative" => opts.relative = true,
                     "--idle-inhibit" => opts.idle_inhibit = true,
+                    "--opaque" => opts.opaque = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -368,7 +373,8 @@ mod tests {
     fn gaming_and_x11_flags() {
         let o = run(&["--lock-pointer", "--relative", "--idle-inhibit", "--inhibit-shortcuts"]).unwrap();
         assert!(o.lock_pointer && o.relative && o.idle_inhibit && o.inhibit_shortcuts);
-        assert!(!o.x11 && !o.confine_pointer);
+        assert!(!o.x11 && !o.confine_pointer && !o.opaque);
+        assert!(run(&["--opaque"]).unwrap().opaque);
         let o = run(&["--x11", "--dialog", "--popup"]).unwrap();
         assert!(o.x11 && o.dialog && o.popup);
         assert!(run(&["--lock-pointer", "--confine-pointer"]).is_err());
