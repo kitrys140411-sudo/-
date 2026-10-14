@@ -43,7 +43,7 @@ use crate::ui::Ui;
 use super::list::{ListView, Selection};
 use super::menu::MenuItem;
 use super::text_input::{self, TextInput};
-use super::{Button, Dialog, Frame, Label, Severity};
+use super::{Button, Column, ColumnHeaders, Dialog, Frame, Label, Severity, SortOrder};
 
 /// What the chooser is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -713,86 +713,22 @@ impl FileChooser {
 
     /// The path as buttons, the last few levels of it.
     fn breadcrumbs(&mut self, ui: &mut Ui) {
-        let home = files::home();
-        let mut crumbs: Vec<(String, PathBuf)> = Vec::new();
-        let mut p = self.dir.as_path();
-        loop {
-            if p == home && home != Path::new("/") {
-                crumbs.push(("Home".into(), p.to_path_buf()));
-                break;
-            }
-            match p.file_name() {
-                Some(n) => crumbs.push((n.to_string_lossy().into_owned(), p.to_path_buf())),
-                None => {
-                    crumbs.push(("Computer".into(), p.to_path_buf()));
-                    break;
-                }
-            }
-            match p.parent() {
-                Some(parent) => p = parent,
-                None => break,
-            }
-        }
-        crumbs.reverse();
-        const MAX: usize = 4;
-        let skipped = crumbs.len().saturating_sub(MAX);
-        let mut go = None;
-        Frame::row().fill_width().gap(0.0).clip().show(ui, |ui| {
-            let t = ui.theme().clone();
-            if skipped > 0 {
-                let target = crumbs[skipped - 1].1.clone();
-                if Button::icon_only(Icon::MoreHorizontal).tooltip(&files::display_path(&target)).id("crumbs-more").show(ui).clicked {
-                    go = Some(target);
-                }
-            }
-            let last = crumbs.len() - 1;
-            for (i, (name, path)) in crumbs.iter().enumerate().skip(skipped) {
-                if i > skipped || skipped > 0 {
-                    ui.icon_colored(Icon::ChevronRight, 14.0, t.text_dim);
-                }
-                let b = Button::new(name.clone()).flat().id(("crumb", i)).toggled(i == last).max_width(220.0);
-                if b.show(ui).clicked && i != last {
-                    go = Some(path.clone());
-                }
-            }
-        });
-        if let Some(p) = go {
+        let dir = self.dir.clone();
+        if let Some(p) = ui.path_bar("chooser", &dir) {
             self.navigate(ui, p);
         }
     }
 
     fn column_headers(&mut self, ui: &mut Ui) {
-        let t = ui.theme().clone();
-        Frame::row().fill_width().height(Size::Px(28.0)).gap(12.0).padding((0.0, 18.0, 0.0, 18.0)).show(ui, |ui| {
-            ui.space(16.0);
-            for (key, label, width, align) in [
-                (SortKey::Name, "Name", Size::FILL, TextAlign::Start),
-                (SortKey::Size, "Size", Size::Px(80.0), TextAlign::End),
-                (SortKey::Modified, "Modified", Size::Px(116.0), TextAlign::Start),
-            ] {
-                let active = self.sort == key;
-                let (_, r) = Frame::row().id(("sort", label)).sense(crate::Sense::CLICK).width(width).height(Size::FILL).gap(4.0).show_with_response(ui, |ui| {
-                    if align == TextAlign::End {
-                        ui.spacer();
-                    }
-                    let c = if active { t.text } else { t.text_dim };
-                    Label::new(label).size(t.size_small()).weight(crate::Weight::Medium).color(c).show(ui);
-                    if active {
-                        ui.icon_colored(if self.descending { Icon::ChevronUp } else { Icon::ChevronDown }, 12.0, t.text_dim);
-                    }
-                });
-                if r.clicked {
-                    if active {
-                        self.descending = !self.descending;
-                    } else {
-                        self.sort = key;
-                        self.descending = false;
-                    }
-                    self.stale = true;
-                }
-            }
-        });
-        ui.separator();
+        let cols = [Column::new("Name", Size::FILL), Column::new("Size", Size::Px(80.0)).end(), Column::new("Modified", Size::Px(116.0))];
+        let keys = [SortKey::Name, SortKey::Size, SortKey::Modified];
+        let mut order = SortOrder { column: keys.iter().position(|k| *k == self.sort).unwrap_or(0), descending: self.descending };
+        // Rows start with a 16 px icon.
+        if ColumnHeaders::new("chooser-columns", &cols).leading(16.0 + 12.0).show(ui, &mut order) {
+            self.sort = keys[order.column];
+            self.descending = order.descending;
+            self.stale = true;
+        }
     }
 
     /// The file list; returns its id and a result when an entry was chosen.

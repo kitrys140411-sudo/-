@@ -169,6 +169,10 @@ pub struct Ui {
     /// leave its editing keys alone.
     text_owner: Option<(Option<Id>, bool)>,
     prev_text_owner: Option<(Option<Id>, bool)>,
+    /// A shortcut field is recording (this pass, the previous one): app
+    /// shortcuts see no keys.
+    key_capture: bool,
+    prev_key_capture: bool,
     pub(crate) now: Instant,
     pub(crate) frame: u64,
     pub(crate) animating: bool,
@@ -210,6 +214,8 @@ impl Ui {
             prev_content: HashMap::new(),
             text_owner: None,
             prev_text_owner: None,
+            key_capture: false,
+            prev_key_capture: false,
             now: Instant::now(),
             frame: 0,
             animating: false,
@@ -330,6 +336,7 @@ impl Ui {
         self.key_owner = self.key_owners.last().copied();
         self.prev_focus_order = std::mem::take(&mut self.focus_order);
         self.prev_text_owner = self.text_owner.take();
+        self.prev_key_capture = std::mem::take(&mut self.key_capture);
         self.gc();
     }
 
@@ -751,12 +758,20 @@ impl Ui {
     /// in `view` the shortcut is checked; other shortcuts (Ctrl+S, F5,
     /// Escape) still work.
     pub fn shortcut(&mut self, s: Shortcut) -> bool {
+        if self.prev_key_capture || self.key_capture {
+            return false;
+        }
         if let Some((owner, multiline)) = self.prev_text_owner {
             if owner == self.overlay && crate::widgets::text_input::is_editing_key(s.key, s.mods, multiline) {
                 return false;
             }
         }
         self.take_key(s.key, s.mods)
+    }
+
+    /// A shortcut field is recording: it gets every key.
+    pub(crate) fn mark_key_capture(&mut self) {
+        self.key_capture = true;
     }
 
     /// A focused text input is being built (it gets the editing keys; a

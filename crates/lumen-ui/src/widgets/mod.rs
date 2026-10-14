@@ -1,6 +1,7 @@
 //! The widgets. Most have a shorthand on [`crate::Ui`] (`ui.button("Save")`)
 //! and a builder for options (`Button::new("Save").primary().show(ui)`).
 
+mod bars;
 mod button;
 mod containers;
 mod dialog;
@@ -21,6 +22,7 @@ mod text_editor;
 pub(crate) mod text_input;
 mod toggle;
 
+pub use bars::{Column, ColumnHeaders, SortOrder, Tab, TabBarResponse};
 pub use button::{Button, ButtonStyle, Widget, CONTROL_HEIGHT};
 pub use containers::Frame;
 pub use dialog::Dialog;

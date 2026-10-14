@@ -513,3 +513,120 @@ fn editor_shows_only_visible_lines_of_a_big_document() {
     assert_eq!(app.0 .0.cursor_position().0, 0);
     eprintln!("100k lines: end, click, home, click in {:?}", t0.elapsed());
 }
+
+// -- Bars ----------------------------------------------------------------------------------
+
+use crate::{Column, ColumnHeaders, SortOrder, Tab};
+
+#[test]
+fn path_bar_and_column_headers() {
+    let Some(mut h) = harness(800.0, 400.0) else { return };
+    let mut app = F((None::<PathBuf>, SortOrder::default(), 0u32), |s: &mut (Option<PathBuf>, SortOrder, u32), ui: &mut Ui| {
+        if let Some(p) = ui.path_bar("files", std::path::Path::new("/usr/share/lumen/icons/apps")) {
+            s.0 = Some(p);
+        }
+        let cols = [Column::new("Name", Size::FILL), Column::new("Size", Size::Px(80.0)).end()];
+        if ColumnHeaders::new("table", &cols).show(ui, &mut s.1) {
+            s.2 += 1;
+        }
+    });
+    h.frame(&mut app);
+    let l = labels(&h);
+    // The last four levels, the rest behind "…".
+    assert!(l.contains(&"apps".into()) && l.contains(&"share".into()) && !l.contains(&"usr".into()), "{l:?}");
+    h.click("lumen");
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.as_deref(), Some(std::path::Path::new("/usr/share/lumen")));
+    h.click("more-horizontal");
+    h.frame(&mut app);
+    assert_eq!(app.0 .0.as_deref(), Some(std::path::Path::new("/usr")));
+    h.click("Size");
+    h.frame(&mut app);
+    assert_eq!((app.0 .1, app.0 .2), (SortOrder { column: 1, descending: false }, 1));
+    h.click("Size");
+    h.frame(&mut app);
+    assert_eq!(app.0 .1, SortOrder { column: 1, descending: true });
+    assert_eq!(app.0 .1.apply(std::cmp::Ordering::Less), std::cmp::Ordering::Greater);
+    assert!(h.log().contains(&"sort Size descending".to_string()));
+}
+
+#[test]
+fn tab_bar_switches_closes_and_adds() {
+    let Some(mut h) = harness(800.0, 400.0) else { return };
+    struct S {
+        docs: Vec<(String, bool)>,
+        active: usize,
+    }
+    let docs = vec![("main.rs".to_string(), false), ("notes.md".to_string(), true), ("todo.txt".to_string(), false)];
+    let mut app = F(S { docs, active: 0 }, |s: &mut S, ui: &mut Ui| {
+        let tabs: Vec<Tab> = s.docs.iter().map(|(n, m)| Tab::new(n.clone()).icon(Icon::FileText).modified(*m)).collect();
+        let r = ui.tab_bar("docs", &mut s.active, &tabs, true);
+        if let Some(i) = r.close {
+            s.docs.remove(i);
+            s.active = s.active.min(s.docs.len().saturating_sub(1));
+        }
+        if r.new_tab {
+            s.docs.push(("Untitled".into(), false));
+            s.active = s.docs.len() - 1;
+        }
+    });
+    h.frame(&mut app);
+    h.click("notes.md");
+    h.frame(&mut app);
+    assert_eq!(app.0.active, 1);
+    assert_eq!(h.widget("notes.md").unwrap().value.as_deref(), Some("on modified"));
+    h.key(Key::PageDown, Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(app.0.active, 2);
+    h.key(Key::Char('w'), Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(app.0.docs.len(), 2);
+    h.click("plus");
+    h.frame(&mut app);
+    assert_eq!((app.0.docs.len(), app.0.active), (3, 2));
+    // The close button of the first tab (shown while hovered).
+    h.hover("main.rs");
+    h.frame(&mut app);
+    h.click("close main.rs");
+    h.frame(&mut app);
+    assert_eq!(app.0.docs.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(), vec!["notes.md", "Untitled"]);
+    let log = h.log();
+    assert!(log.contains(&"tab-close docs main.rs".to_string()) && log.contains(&"tab-new docs".to_string()), "{log:?}");
+}
+
+#[test]
+fn shortcut_field_records_a_combination() {
+    let Some(mut h) = harness(600.0, 300.0) else { return };
+    let mut app = F((Some(Shortcut::ctrl('t')), 0u32), |s: &mut (Option<Shortcut>, u32), ui: &mut Ui| {
+        if ui.shortcut(Shortcut::ctrl('s')) {
+            s.1 += 1;
+        }
+        ui.shortcut_input("terminal", &mut s.0);
+    });
+    h.frame(&mut app);
+    assert_eq!(h.widget("terminal").unwrap().value.as_deref(), Some("Ctrl+T"));
+    h.click("terminal");
+    h.frame(&mut app);
+    assert_eq!(h.widget("terminal").unwrap().value.as_deref(), Some("recording"));
+    // Typing a plain letter is ignored; Ctrl+S is recorded, not an app shortcut.
+    h.key(Key::Char('k'), Mods::NONE);
+    h.key(Key::Char('s'), Mods::CTRL_SHIFT);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0, Some(Shortcut::ctrl_shift('s')));
+    assert_eq!(app.0 .1, 0);
+    h.key(Key::Char('s'), Mods::CTRL);
+    h.frame(&mut app);
+    assert_eq!(app.0 .1, 1, "after recording, shortcuts work again");
+    // Backspace disables, Escape cancels.
+    h.key(Key::Enter, Mods::NONE);
+    h.frame(&mut app);
+    h.key(Key::Backspace, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0, None);
+    assert_eq!(h.widget("terminal").unwrap().value.as_deref(), Some("disabled"));
+    h.key(Key::Enter, Mods::NONE);
+    h.key(Key::Escape, Mods::NONE);
+    h.frame(&mut app);
+    assert_eq!(app.0 .0, None);
+    assert!(h.log().contains(&"shortcut terminal Ctrl+Shift+S".to_string()));
+}
