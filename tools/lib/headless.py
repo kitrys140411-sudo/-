@@ -374,7 +374,8 @@ class UiApp:
     def settle(self, quiet=0.3, timeout=10):
         """Wait until the app's widgets stop moving (scrolling, opening
         menus...) for `quiet` seconds; endless animations such as spinners
-        do not count, the compositor's own `settle` is separate."""
+        do not count. Waits for the compositor's animations first."""
+        self.c.settle()
         last, since = None, time.time()
         deadline = time.time() + timeout
         while time.time() < deadline:

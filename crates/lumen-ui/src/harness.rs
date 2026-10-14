@@ -122,12 +122,13 @@ impl Harness {
         let tree = &self.ui.tree;
         let size = self.ui.window.size;
         let mut out = Vec::new();
-        let mut stack: Vec<(u32, Rect, u32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.x, size.y), r.layer)).collect();
-        while let Some((i, clip, layer)) = stack.pop() {
+        let mut stack: Vec<(u32, Rect, u32, f32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.x, size.y), r.layer, 1.0)).collect();
+        while let Some((i, clip, layer, alpha)) = stack.pop() {
             let n = &tree.nodes[i as usize];
             let r = n.rect.intersect(&clip);
+            let alpha = alpha * n.opacity;
             if let Some(label) = &n.label {
-                if !n.kind.is_empty() && !r.is_empty() && n.opacity > 0.0 {
+                if !n.kind.is_empty() && !r.is_empty() && alpha > 0.0 {
                     out.push(WidgetInfo {
                         kind: n.kind,
                         label: label.clone(),
@@ -142,7 +143,7 @@ impl Harness {
             let clip = if n.clip { clip.intersect(&n.rect) } else { clip };
             let kids: Vec<u32> = tree.children(i).collect();
             for c in kids.into_iter().rev() {
-                stack.push((c, clip, layer));
+                stack.push((c, clip, layer, alpha));
             }
         }
         out

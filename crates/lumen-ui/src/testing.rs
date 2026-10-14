@@ -8,7 +8,9 @@
 //!   `{"size":[w,h],"scale":s,"frames":n,"renders":m,"widgets":[{"kind":
 //!   "button","label":"Add","x":..,"y":..,"w":..,"h":..,"layer":0,
 //!   "hovered":false,"focused":false,"value":"..."}]}` in logical window
-//!   coordinates, so a test can click a widget by its label. `frames`
+//!   coordinates, so a test can click a widget by its label (`alpha` is
+//!   added while a widget fades in or out, so a test can wait for the
+//!   widgets to settle before a screenshot). `frames`
 //!   counts presented frames and `renders` the times `view` ran for a frame
 //!   (an idle window changes neither).
 
@@ -63,26 +65,28 @@ impl TestLog {
         let Some(path) = &self.map else { return };
         let mut s = format!("{{\"size\":[{},{}],\"scale\":{},\"frames\":{},\"renders\":{},\"widgets\":[", size.0, size.1, scale, counts.0, counts.1);
         let mut first = true;
-        // Visible part of each node: clipped by its clipping ancestors.
-        let mut stack: Vec<(u32, Rect, u32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.0, size.1), r.layer)).collect();
+        // Visible part of each node: clipped by its clipping ancestors, and
+        // its opacity including theirs (fading in or out).
+        let mut stack: Vec<(u32, Rect, u32, f32)> = tree.roots.iter().rev().map(|r| (r.node, Rect::new(0.0, 0.0, size.0, size.1), r.layer, 1.0)).collect();
         let mut order = Vec::new();
-        while let Some((i, clip, layer)) = stack.pop() {
+        while let Some((i, clip, layer, alpha)) = stack.pop() {
             let n = &tree.nodes[i as usize];
-            order.push((i, clip, layer));
+            let alpha = alpha * n.opacity;
+            order.push((i, clip, layer, alpha));
             let clip = if n.clip { clip.intersect(&n.rect) } else { clip };
             let kids: Vec<u32> = tree.children(i).collect();
             for c in kids.into_iter().rev() {
-                stack.push((c, clip, layer));
+                stack.push((c, clip, layer, alpha));
             }
         }
-        for (i, clip, layer) in order {
+        for (i, clip, layer, alpha) in order {
             let n = &tree.nodes[i as usize];
             let Some(label) = &n.label else { continue };
             if n.kind.is_empty() {
                 continue;
             }
             let r = n.rect.intersect(&clip);
-            if r.is_empty() || n.opacity <= 0.0 {
+            if r.is_empty() || alpha <= 0.0 {
                 continue;
             }
             if !first {
@@ -104,6 +108,9 @@ impl TestLog {
             );
             if let Some(v) = &n.value {
                 let _ = write!(s, ",\"value\":{}", json_str(v));
+            }
+            if alpha < 0.995 {
+                let _ = write!(s, ",\"alpha\":{alpha:.2}");
             }
             s.push('}');
         }
