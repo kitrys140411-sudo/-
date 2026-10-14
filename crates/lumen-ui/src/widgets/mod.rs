@@ -16,6 +16,7 @@ mod nav;
 mod range;
 mod rows;
 mod scroll;
+mod text_doc;
 pub(crate) mod text_input;
 mod toggle;
 
@@ -32,4 +33,5 @@ pub use menu::{MenuItem, MenuUi};
 pub use range::{ProgressBar, Slider, Spinner};
 pub use rows::ListRow;
 pub use scroll::{ScrollArea, Viewport};
+pub use text_doc::TextDoc;
 pub use text_input::TextInput;
