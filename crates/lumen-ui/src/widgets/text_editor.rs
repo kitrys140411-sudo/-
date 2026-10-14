@@ -643,8 +643,9 @@ impl TextEditor<'_> {
         st.version = doc.version();
         if doc.version() != version0 {
             r.changed = true;
-            let preview: String = doc.text().chars().take(200).collect::<String>().replace('\n', "\\n");
-            ui.log(&format!("edit {} {preview}", self.name));
+            // Test log: where the cursor is and the text of its line.
+            let (l, c) = doc.cursor_position();
+            ui.log(&format!("edit {} {}:{} {}", self.name, l + 1, c + 1, doc.line(l)));
         }
         *ui.state::<EditorState>(id) = st;
         r

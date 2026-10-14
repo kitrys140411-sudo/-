@@ -75,7 +75,8 @@ def test_tab_traversal_and_keyboard_activation(t):
     c, g = start(t)
     m = g.mark()
     order = []
-    for _ in range(10):
+    # The header's menu button, the eight pages of the sidebar, then the page.
+    for _ in range(11):
         k = g.mark()
         c.key("tab")
         order.append(g.wait_log(r"^focus (.*)$", k).group(1))
@@ -254,6 +255,42 @@ def test_shortcuts_work_in_the_russian_layout(t):
     g.widget("Open File", "dialog")
     c.key("esc")
     g.wait_log(r"^chooser cancelled$", m)
+
+
+def test_text_editor(t):
+    c, g = start(t, "--page", "editor")
+    t.check(title(g) == "Gallery — Editor", f"title {title(g)!r}")
+    m = g.mark()
+    # Click into the editor, go to the end, type two lines (Enter keeps the
+    # indentation of the line before).
+    g.click("editor", "editor")
+    c.key("ctrl", "end")
+    c.type("Notes:")
+    c.key("enter")
+    c.type("  first")
+    c.key("enter")
+    c.type("second")
+    g.wait_log(r"^edit editor 14:9   second$", m)
+    g.widget("Modified")
+    g.widget("Ln 14, Col 9")
+    # Ctrl+F: find highlights every match and Enter selects the next one.
+    c.key("ctrl", "f")
+    c.type("lumen")
+    g.widget("3 matches")
+    c.key("enter")
+    g.settle()
+    c.screenshot("editor-find")
+    # Without wrapping the long lines scroll sideways; undo restores text.
+    g.click("wrap", "switch")
+    g.wait_log(r"^toggle wrap off$", m)
+    g.click("editor", "editor")
+    k = g.mark()
+    # Undo steps: "second", the new line, "first", two spaces, the new line.
+    for _ in range(6):
+        c.key("ctrl", "z")
+    g.wait_log(r"^edit editor 12:7 Notes:$", k)
+    g.settle()
+    c.screenshot("editor-nowrap")
 
 
 def test_settings_rows_and_icons(t):

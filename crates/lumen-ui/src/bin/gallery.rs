@@ -11,10 +11,11 @@ use std::time::Duration;
 
 use lumen_ui::prelude::*;
 
-const PAGES: [(Icon, &str); 7] = [
+const PAGES: [(Icon, &str); 8] = [
     (Icon::Sliders, "Controls"),
     (Icon::List, "Lists"),
     (Icon::FileText, "Text"),
+    (Icon::Edit, "Editor"),
     (Icon::Activity, "Graphs"),
     (Icon::Info, "Dialogs"),
     (Icon::Settings, "Settings"),
@@ -64,6 +65,11 @@ struct Gallery {
     rename_text: String,
     chooser: Option<FileChooser>,
     last_choice: String,
+    // Editor
+    doc: TextDoc,
+    find: String,
+    wrap: bool,
+    numbers: bool,
     // Settings
     wifi: bool,
     bluetooth: bool,
@@ -94,6 +100,10 @@ impl Gallery {
             rename_text: String::new(),
             chooser: None,
             last_choice: "Nothing chosen yet".into(),
+            doc: TextDoc::new(SAMPLE),
+            find: String::new(),
+            wrap: true,
+            numbers: true,
             wifi: true,
             bluetooth: false,
             airplane: false,
@@ -141,14 +151,16 @@ impl App for Gallery {
                 }
             },
             |ui| {
-                self.graphs_visible.store(shown == 3, Ordering::Relaxed);
-                match shown {
-                    0 => self.controls(ui),
-                    1 => self.lists(ui),
-                    2 => self.text(ui),
-                    3 => self.graphs(ui),
-                    4 => self.dialogs(ui),
-                    5 => self.settings(ui),
+                let name = PAGES[shown].1;
+                self.graphs_visible.store(name == "Graphs", Ordering::Relaxed);
+                match name {
+                    "Controls" => self.controls(ui),
+                    "Lists" => self.lists(ui),
+                    "Text" => self.text(ui),
+                    "Editor" => self.editor(ui),
+                    "Graphs" => self.graphs(ui),
+                    "Dialogs" => self.dialogs(ui),
+                    "Settings" => self.settings(ui),
                     _ => self.icons(ui),
                 }
             },
@@ -189,7 +201,7 @@ fn section(ui: &mut Ui, title: &str, f: impl FnOnce(&mut Ui)) {
 
 impl Gallery {
     fn shortcuts(&mut self, ui: &mut Ui) {
-        for (i, c) in ['1', '2', '3', '4', '5', '6', '7'].into_iter().enumerate() {
+        for (i, c) in ['1', '2', '3', '4', '5', '6', '7', '8'].into_iter().enumerate() {
             if ui.shortcut(Shortcut::ctrl(c)) {
                 self.page = i;
                 ui.log(&format!("page {}", PAGES[i].1));
@@ -397,6 +409,61 @@ impl Gallery {
                 ui.label("Русский текст — съешь же ещё этих мягких французских булок");
                 ui.label("Ελληνικά · Čeština · Türkçe · Tiếng Việt");
                 ui.label("Emoji: 🎮 🚀 ✨ 👍🏽");
+            });
+        });
+    }
+
+    fn editor(&mut self, ui: &mut Ui) {
+        let t = ui.theme().clone();
+        let matches = self.doc.find_all(&self.find, false, 10_000);
+        // Ctrl+F finds, Enter and F3 go to the next match, Shift+F3 back.
+        let mut focus_find = ui.shortcut(Shortcut::ctrl('f'));
+        if ui.shortcut(Shortcut::key(Key::F(3))) {
+            self.doc.find_next(&self.find, false);
+        }
+        if ui.shortcut(Shortcut::new(Mods::SHIFT, Key::F(3))) {
+            self.doc.find_previous(&self.find, false);
+        }
+        Frame::column().fill_width().height(Size::FILL).show(ui, |ui| {
+            Frame::row().fill_width().padding((10.0, 16.0)).gap(8.0).show(ui, |ui| {
+                let r = TextInput::new("find", &mut self.find).icon(Icon::Search).placeholder("Find").clear_button().width(Size::Px(260.0)).show(ui);
+                if std::mem::take(&mut focus_find) {
+                    ui.request_focus(r.id);
+                }
+                if r.submitted {
+                    self.doc.find_next(&self.find, false);
+                }
+                if !self.find.is_empty() {
+                    ui.caption(match matches.len() {
+                        0 => "No matches".to_string(),
+                        1 => "1 match".to_string(),
+                        n => format!("{n} matches"),
+                    });
+                }
+                if Button::icon_only(Icon::ChevronUp).tooltip("Previous Match").enabled(!matches.is_empty()).show(ui).clicked {
+                    self.doc.find_previous(&self.find, false);
+                }
+                if Button::icon_only(Icon::ChevronDown).tooltip("Next Match").enabled(!matches.is_empty()).show(ui).clicked {
+                    self.doc.find_next(&self.find, false);
+                }
+                ui.spacer();
+                ui.switch("wrap", &mut self.wrap);
+                ui.label("Wrap");
+                ui.space(8.0);
+                ui.switch("line numbers", &mut self.numbers);
+                ui.label("Line Numbers");
+            });
+            ui.separator();
+            TextEditor::new("editor", &mut self.doc).wrap(self.wrap).line_numbers(self.numbers).highlights(&matches).placeholder("Type something…").show(ui);
+            ui.separator();
+            Frame::row().fill_width().padding((6.0, 16.0)).gap(16.0).show(ui, |ui| {
+                let (l, c) = self.doc.cursor_position();
+                Label::new(format!("Ln {}, Col {}", l + 1, c + 1)).size(t.size_small()).dim().show(ui);
+                Label::new(format!("{} lines", self.doc.line_count())).size(t.size_small()).dim().show(ui);
+                ui.spacer();
+                if self.doc.is_modified() {
+                    Label::new("Modified").size(t.size_small()).color(t.accent).show(ui);
+                }
             });
         });
     }
@@ -642,6 +709,24 @@ fn legend(ui: &mut Ui, color: Color, text: &str) {
         ui.label(text);
     });
 }
+
+/// The Editor page's starting text: code with tabs, and prose with long
+/// lines to wrap.
+const SAMPLE: &str = "// A small program: try typing, Tab, Shift+Tab and Ctrl+Z.
+fn main() {
+\tlet greeting = \"Hello, Lumen!\";
+\tfor i in 0..3 {
+\t\tprintln!(\"{greeting} #{i}\");
+\t}
+}
+
+Lumen is a small desktop operating system. Its apps are built with lumen-ui, an immediate-mode toolkit \
+drawn on the GPU: every frame the app describes its window, and the toolkit lays it out, paints only \
+what changed and goes quiet when nothing moves.
+
+Long lines wrap at the window edge; turn Wrap off to scroll sideways instead. Double-click selects a \
+word, triple-click a line, and Ctrl+F finds text.
+";
 
 fn open_chooser() -> FileChooser {
     FileChooser::open("Open File").filter("All Files", &[]).filter("Images", &["*.png", "*.jpg", "*.jpeg", "*.webp"]).filter("Text Files", &["*.txt", "*.md"])

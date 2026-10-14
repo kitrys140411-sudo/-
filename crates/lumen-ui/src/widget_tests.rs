@@ -377,7 +377,7 @@ fn editor_types_lines_keeps_indentation_and_moves_vertically() {
     h.frame(&mut app);
     assert_eq!(app.0 .0.text(), "fn main() {\n    let x = 1;\n    y");
     assert_eq!(app.0 .1, 0, "Enter and Up stay with the focused editor");
-    assert!(h.log().iter().any(|l| l.starts_with("edit notes fn main()")));
+    assert!(h.log().iter().any(|l| l == "edit notes 3:6     y"), "the log names the cursor's line");
     // Up keeps the column (monospace: the same x is the same column).
     h.key(Key::Up, Mods::NONE);
     h.frame(&mut app);

@@ -431,9 +431,10 @@ impl Runtime {
     }
 
     /// Test builds report frame times every 120 presented frames and at the
-    /// end of each burst of activity, with the textures uploaded meanwhile.
+    /// end of each burst of activity (of at least a few frames; shorter ones
+    /// count toward the next report), with the textures uploaded meanwhile.
     fn report_perf(&mut self, animating: bool) {
-        if !self.ui.test.enabled() || self.perf.0 == 0 || (self.perf.0 < 120 && animating) {
+        if !self.ui.test.enabled() || self.perf.0 < 5 || (self.perf.0 < 120 && animating) {
             return;
         }
         let r = self.renderer.as_ref().unwrap();
