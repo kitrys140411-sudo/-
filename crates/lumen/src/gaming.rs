@@ -5,6 +5,11 @@
 //!   cursor is hidden meanwhile. A confinement keeps it inside a region.
 //!   Constraints only hold for the focused window: switching windows (Alt+Tab,
 //!   Super for the overview) releases them, so the user can always escape.
+//!   X11 override-redirect windows (unmanaged fullscreen games; Xwayland turns
+//!   their pointer grabs into constraints) count as focused while X11 has the
+//!   keyboard, e.g. through their keyboard grab. A confined pointer slides
+//!   along the region's edge, and the hot corner is off while a constraint
+//!   holds or a fullscreen game is on top.
 //! * keyboard shortcuts inhibit: while granted, keys go to the window instead
 //!   of triggering shortcuts, except those with Super and console switching.
 //! * idle inhibit: a visible surface with an inhibitor (or a fullscreen window
@@ -20,7 +25,7 @@ use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{IsAlive, Logical, Point};
-use smithay::wayland::compositor::get_parent;
+use smithay::wayland::compositor::{get_parent, RectangleKind, RegionAttributes};
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor, KeyboardShortcutsInhibitorSeat,
@@ -94,19 +99,31 @@ impl Lumen {
         Some((surface, origin, c))
     }
 
+    /// Whether the constraints of the surface tree `root` may hold: it is
+    /// the focused window, or an X11 override-redirect window while an X11
+    /// surface has the keyboard (its own keyboard grab, its app's window) or,
+    /// with nothing focused, while it covers the output.
+    fn constraint_allowed(&self, root: &WlSurface) -> bool {
+        if self.shell.wants_keyboard() {
+            return false;
+        }
+        if self.focused_surface().as_ref() == Some(root) {
+            return true;
+        }
+        let Some(or) = self.wm.overrides.iter().find(|o| o.wl_surface().as_ref() == Some(root)) else { return false };
+        let nothing_focused = self.seat.get_keyboard().is_none_or(|k| k.current_focus().is_none());
+        self.x11_focused() || (nothing_focused && or.geometry().to_f64().contains_rect(self.output_rect()))
+    }
+
     /// Bring constraints in line with focus: the one of the surface under the
     /// pointer becomes active when its window has keyboard focus and the
     /// pointer is inside its region; any other active one is released.
     pub fn update_pointer_constraints(&mut self) {
         let Some(pointer) = self.seat.get_pointer() else { return };
-        let focused = self.focused_surface();
         let target = self.pointer_target.clone();
         // Release a lock held by a window that lost focus or the pointer.
         if let Some(prev) = self.constrained.take() {
-            let keep = prev.alive()
-                && target.as_ref().is_some_and(|(s, _)| *s == prev)
-                && focused.as_ref() == Some(&root_surface(&prev))
-                && !self.shell.wants_keyboard();
+            let keep = prev.alive() && target.as_ref().is_some_and(|(s, _)| *s == prev) && self.constraint_allowed(&root_surface(&prev));
             if keep {
                 self.constrained = Some(prev);
             } else if prev.alive() {
@@ -118,7 +135,7 @@ impl Lumen {
             }
         }
         let Some((surface, origin)) = target else { return };
-        if focused.as_ref() != Some(&root_surface(&surface)) || self.shell.wants_keyboard() {
+        if !self.constraint_allowed(&root_surface(&surface)) {
             return;
         }
         let local = (self.pointer_pos - origin).to_i32_round();
@@ -154,16 +171,17 @@ impl Lumen {
                 true
             }
             Constraint::Confined(region) => {
-                // Keep the pointer inside: clamp to the surface, and a move
-                // that would leave the region does not happen.
+                // Keep the pointer inside: clamp to the surface, and slide
+                // along the region's edge (the region may also have shrunk
+                // away from the pointer: then it moves to the nearest point).
                 let size = smithay::backend::renderer::utils::with_renderer_surface_state(&surface, |s| s.surface_size()).flatten();
                 let mut local = *pos - origin;
                 if let Some(size) = size {
                     local.x = local.x.clamp(0.0, (size.w - 1).max(0) as f64);
                     local.y = local.y.clamp(0.0, (size.h - 1).max(0) as f64);
                 }
-                if region.as_ref().is_some_and(|r| !r.contains(local.to_i32_round())) {
-                    local = self.pointer_pos - origin;
+                if let Some(r) = region.as_ref() {
+                    local = confine_to_region(r, self.pointer_pos - origin, local);
                 }
                 *pos = origin + local;
                 false
@@ -262,6 +280,40 @@ impl Lumen {
     }
 }
 
+/// Where a pointer confined to `region` (surface-local) goes when it moves
+/// from `from` toward `to`: there if inside, else along the axis that stays
+/// inside (sliding along an edge), else the nearest point of the region.
+fn confine_to_region(region: &RegionAttributes, from: Point<f64, Logical>, to: Point<f64, Logical>) -> Point<f64, Logical> {
+    let inside = |p: Point<f64, Logical>| region.contains(p.to_i32_round());
+    if inside(to) {
+        return to;
+    }
+    for p in [Point::from((to.x, from.y)), Point::from((from.x, to.y))] {
+        if inside(p) && inside(from) {
+            return p;
+        }
+    }
+    nearest_in_region(region, to).unwrap_or(from)
+}
+
+/// The point of `region` closest to `p` (None: the region is empty).
+fn nearest_in_region(region: &RegionAttributes, p: Point<f64, Logical>) -> Option<Point<f64, Logical>> {
+    region
+        .rects
+        .iter()
+        .filter(|(kind, r)| matches!(kind, RectangleKind::Add) && r.size.w > 0 && r.size.h > 0)
+        .map(|(_, r)| {
+            let x = p.x.clamp(r.loc.x as f64, (r.loc.x + r.size.w - 1) as f64);
+            let y = p.y.clamp(r.loc.y as f64, (r.loc.y + r.size.h - 1) as f64);
+            Point::<f64, Logical>::from((x, y))
+        })
+        .filter(|q| region.contains(q.to_i32_round()))
+        .min_by(|a, b| {
+            let d = |q: &Point<f64, Logical>| (q.x - p.x).powi(2) + (q.y - p.y).powi(2);
+            d(a).total_cmp(&d(b))
+        })
+}
+
 impl PointerConstraintsHandler for Lumen {
     fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
         self.update_pointer_constraints();
@@ -313,6 +365,33 @@ smithay::delegate_idle_inhibit!(Lumen);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn region(rects: &[(RectangleKind, (i32, i32, i32, i32))]) -> RegionAttributes {
+        RegionAttributes { rects: rects.iter().map(|(k, (x, y, w, h))| (*k, smithay::utils::Rectangle::new((*x, *y).into(), (*w, *h).into()))).collect() }
+    }
+
+    fn pt(x: f64, y: f64) -> Point<f64, Logical> {
+        (x, y).into()
+    }
+
+    #[test]
+    fn confined_pointer_slides_and_recovers() {
+        let r = region(&[(RectangleKind::Add, (100, 100, 200, 100))]);
+        // Inside: moves freely.
+        assert_eq!(confine_to_region(&r, pt(150.0, 150.0), pt(160.0, 170.0)), pt(160.0, 170.0));
+        // Diagonally out through the right edge: slides along it.
+        assert_eq!(confine_to_region(&r, pt(290.0, 150.0), pt(320.0, 160.0)), pt(290.0, 160.0));
+        // Out through the bottom: keeps x.
+        assert_eq!(confine_to_region(&r, pt(150.0, 190.0), pt(170.0, 260.0)), pt(170.0, 190.0));
+        // The region shrank away from the pointer: the next move lands on its nearest point.
+        let small = region(&[(RectangleKind::Add, (100, 100, 50, 50))]);
+        assert_eq!(confine_to_region(&small, pt(250.0, 180.0), pt(252.0, 181.0)), pt(149.0, 149.0));
+        // A hole (subtracted rectangle) is never entered.
+        let holed = region(&[(RectangleKind::Add, (0, 0, 100, 100)), (RectangleKind::Subtract, (40, 40, 20, 20))]);
+        let p = confine_to_region(&holed, pt(30.0, 50.0), pt(50.0, 50.0));
+        assert!(holed.contains(p.to_i32_round()), "{p:?}");
+        assert_eq!(nearest_in_region(&region(&[]), pt(1.0, 1.0)), None);
+    }
 
     #[test]
     fn blank_timeout_from_env() {

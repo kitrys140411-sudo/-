@@ -417,8 +417,10 @@ impl Lumen {
             return;
         }
 
-        // Hot corner: entering the top-left corner opens the overview.
-        if self.theme.geometry.hot_corner && pos.x <= 0.5 && pos.y <= 0.5 && (prev.x > 0.5 || prev.y > 0.5) {
+        // Hot corner: entering the top-left corner opens the overview, but
+        // not in a game (edge scrolling, a confined or hidden pointer).
+        let corner = pos.x <= 0.5 && pos.y <= 0.5 && (prev.x > 0.5 || prev.y > 0.5);
+        if corner && self.theme.geometry.hot_corner && self.active_constraint().is_none() && !self.fullscreen_game() {
             self.shell_toggle_overview(false);
         }
 

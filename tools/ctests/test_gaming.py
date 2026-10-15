@@ -224,3 +224,40 @@ def test_fullscreen_scanout_candidate(t):
     c.action("overview")
     c.settle()
     t.check(not json.loads(c.ipc("scene"))["candidate"], "overview must be composited")
+
+
+def test_hot_corner_not_in_games(t):
+    """The top-left hot corner opens the overview on the desktop, but not under a
+    fullscreen game, whose pointer may well reach the corner (edge scrolling, a
+    confined pointer)."""
+    c = t.compositor()
+    c.pointer(300, 300)
+    c.pointer(0, 0)
+    c.wait(lambda: c.shell()["overview"], 10, "hot corner on the desktop")
+    c.key("esc")
+    c.wait(lambda: not c.shell()["overview"], 10, "overview closed")
+    c.settle()
+    g, w = c.map_window("RTS", "--fullscreen", "--confine-pointer", "--size", "640x400")
+    c.wait(lambda: c.window("RTS")["layout"] == "fullscreen", 10, "fullscreen")
+    c.settle()
+    c.pointer(640, 400)
+    g.wait_line(r"^confine event=confined")
+    c.ipc("motion -2000 -2000")
+    t.check(c.cursor()[:2] == (0, 0), c.cursor())
+    time.sleep(0.3)
+    t.check(not c.shell()["overview"], "the hot corner opened the overview over a game")
+    t.check(idle(c)["pointer_constraint"] == "confined", idle(c))
+    # Without a constraint, a fullscreen window still keeps the corner quiet.
+    c.key("super")
+    g.wait_line(r"^confine event=unconfined")
+    c.key("super")
+    c.wait(lambda: not c.shell()["overview"], 10, "overview closed")
+    c.settle()
+    g.stop()
+    f, _ = c.map_window("Strategy", "--fullscreen", "--size", "640x400")
+    c.wait(lambda: c.window("Strategy")["layout"] == "fullscreen", 10, "fullscreen")
+    c.settle()
+    c.pointer(400, 300)
+    c.pointer(0, 0)
+    time.sleep(0.3)
+    t.check(not c.shell()["overview"], "the hot corner opened the overview over a fullscreen window")

@@ -535,3 +535,30 @@ def test_xwayland_restarts_after_crash(t):
     c.wait(lambda: xinfo(c)["ready"] and xinfo(c)["pid"] not in (None, pid), 20, "new Xwayland")
     t.check(xinfo(c)["failures"] == 1, xinfo(c))
     map_x11(c, "XAfter")
+
+
+def test_unmanaged_game_mouse_look(t):
+    """SDL 1.2/Wine unmanaged fullscreen game with mouse look: Xwayland's pointer lock on
+    the override-redirect window holds (the game has the keyboard through its grab), so the
+    hidden pointer stays put and never reaches the hot corner."""
+    c = t.compositor()
+    cl = x11_client(c, "--title", "XSdlLook", "--override-fullscreen", "--grab-pointer", "--color", "#304030", name="game")
+    cl.wait_line(r"^grab keyboard status=success")
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "game window")
+    c.click(640, 400)
+    cl.wait_line(r"^grab status=success")
+    c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] == "locked", 10, "pointer lock")
+    t.check(c.cursor()[2] == "hidden", c.cursor())
+    c.ipc("motion 30 0")
+    cl.wait_line(r"^look dx=30 dy=0")
+    # (The pointer follows Xwayland's cursor position hints, which move with the
+    # look and jump back with each warp, so it is not checked to stay put.)
+    for _ in range(10):
+        c.ipc("motion -200 -150")
+    cl.wait_line(r"^look dx=-200 dy=-150")
+    time.sleep(0.3)
+    t.check(json.loads(c.ipc("idle"))["pointer_constraint"] == "locked" and c.cursor()[2] == "hidden", c.cursor())
+    t.check(not c.shell()["overview"], "hot corner fired during mouse look")
+    # Super still escapes.
+    c.key("super")
+    c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] is None, 10, "lock released")
