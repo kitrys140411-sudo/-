@@ -84,6 +84,9 @@ pub struct Win {
     /// placed when they ask to be mapped, so the X server knows where they
     /// are before they draw).
     pub placed: bool,
+    /// Fullscreen because an undecorated X11 window covered the output (old
+    /// games), not because it asked: it may shrink back to a window.
+    pub legacy_fullscreen: bool,
 }
 
 impl Win {
@@ -256,6 +259,7 @@ impl Wm {
             pending_morph: None,
             morph: None,
             placed: false,
+            legacy_fullscreen: false,
         });
         id
     }
@@ -487,7 +491,7 @@ impl Wm {
         if !x.alive() || x.is_override_redirect() {
             return;
         }
-        let size = w.requested_size.unwrap_or_else(|| x.geometry().size);
+        let size = clamp_x11_size(x, w.requested_size.unwrap_or_else(|| x.geometry().size));
         let loc = match w.resize_anchor {
             Some((anchor, left, top)) => Point::from((
                 if left { anchor.x - size.w as f64 } else { w.target.x },
@@ -573,11 +577,26 @@ impl Wm {
             }
             Layout::Fullscreen { .. } => (output, false, true, None),
         };
-        let size = Size::from((rect.size.w.round() as i32, rect.size.h.round() as i32));
+        let mut size = Size::from((rect.size.w.round() as i32, rect.size.h.round() as i32));
+        let mut rect = rect;
+        if let Some(x) = self.get(id).and_then(|w| w.x11()) {
+            // X clients cannot refuse a size: one outside their size hints
+            // (a fixed-size game or dialog) keeps its size, centered.
+            let fitted = clamp_x11_size(x, size);
+            if fitted != size {
+                rect.loc.x += ((size.w - fitted.w) as f64 / 2.0).round();
+                rect.loc.y += ((size.h - fitted.h) as f64 / 2.0).round();
+                rect.size = fitted.to_f64();
+                size = fitted;
+            }
+        }
         let mut morph = false;
         if let Some(w) = self.get_mut(id) {
             let from_square = w.is_square();
             w.layout = layout;
+            if !matches!(layout, Layout::Fullscreen { .. }) {
+                w.legacy_fullscreen = false;
+            }
             w.resize_anchor = None;
             // X11 windows report the new size at once (it is the X geometry,
             // not the client's buffer), so they cannot wait for it: they slide.
@@ -689,6 +708,20 @@ impl Wm {
             .find(|w| w.mapped && w.ws == self.current && w.geo().contains(p))
             .map(|w| w.id)
     }
+}
+
+/// A size within an X11 window's WM_NORMAL_HINTS minimum and maximum.
+pub fn clamp_x11_size(x: &X11Surface, size: Size<i32, Logical>) -> Size<i32, Logical> {
+    let (mut w, mut h) = (size.w, size.h);
+    if let Some(max) = x.max_size().filter(|m| m.w > 0 && m.h > 0) {
+        w = w.min(max.w);
+        h = h.min(max.h);
+    }
+    if let Some(min) = x.min_size() {
+        w = w.max(min.w);
+        h = h.max(min.h);
+    }
+    Size::from((w.max(1), h.max(1)))
 }
 
 /// The same X11 window (by id, even after it was destroyed).

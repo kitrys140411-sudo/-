@@ -163,10 +163,45 @@ def test_x11_maximize_fullscreen_close(t):
 
 
 def test_x11_legacy_fullscreen_by_size(t):
-    """Old games make an undecorated window the size of the screen instead of asking."""
+    """Old games make an undecorated window the size of the screen instead of asking; when
+    they go back to a window by resizing it, they get a window."""
     c = t.compositor()
-    cl, w = map_x11(c, "XGame", "--size", "1280x800", "--color", "#304050")
+    cl, w = map_x11(c, "XGame", "--size", "1280x800", "--undecorated", "--color", "#304050")
     t.check(w["layout"] == "fullscreen" and (w["x"], w["y"], w["w"], w["h"]) == (0, 0, 1280, 800), w)
+    t.check(json.loads(c.ipc("idle"))["inhibited"], "a fullscreen game keeps the screen on")
+    wid = x11_run(c, "xdotool", "search", "--name", "^XGame$").stdout.split()[0]
+    x11_run(c, "xdotool", "windowsize", wid, "640", "400")
+    c.wait(lambda: c.window("XGame")["layout"] == "floating", 10, "back to a window")
+    c.settle()
+    w = c.window("XGame")
+    t.check((w["w"], w["h"]) == (640, 400) and near(w["x"], (1280 - 640) / 2, 1) and near(w["y"], 32 + (768 - 400) / 2, 1), w)
+    t.check(not json.loads(c.ipc("idle"))["inhibited"], json.loads(c.ipc("idle")))
+
+
+def test_x11_big_window_is_not_fullscreen(t):
+    """A decorated window larger than the screen (an app restoring its size from a bigger
+    monitor) is fitted into the work area, not made fullscreen."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XBig", "--size", "1600x1000", "--color", "#405060")
+    t.check(w["layout"] == "floating" and (w["x"], w["y"], w["w"], w["h"]) == (0, 32, 1280, 768), w)
+    t.check(c.shell()["dock_shown"] > 0.5 or any(h["hit"] == "Power" for h in c.shell()["hits"]), "panel hidden")
+    t.check(not json.loads(c.ipc("idle"))["inhibited"], json.loads(c.ipc("idle")))
+
+
+def test_x11_fixed_size_window_keeps_its_size(t):
+    """X clients cannot refuse a size: a fixed-size window (WM_NORMAL_HINTS min = max) is
+    centered at its size instead of being maximized or tiled to a size it cannot draw."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XFixed", "--fixed-size", "--size", "400x300", "--color", "#506070")
+    c.action("maximize")
+    c.settle()
+    w = c.window("XFixed")
+    t.check((w["w"], w["h"]) == (400, 300) and near(w["x"], (1280 - 400) / 2, 1) and near(w["y"], 32 + (768 - 300) / 2, 1), w)
+    out = x11_run(c, "xwininfo", "-name", "XFixed").stdout
+    t.check("Width: 400" in out and "Height: 300" in out, out)
+    c.action("restore")
+    c.settle()
+    t.check((c.window("XFixed")["w"], c.window("XFixed")["h"]) == (400, 300), c.window("XFixed"))
 
 
 def test_x11_titlebar_drag_moves_window(t):

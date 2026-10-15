@@ -40,7 +40,7 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata, request_data_device_client_selection,
     set_data_device_selection,
@@ -497,8 +497,7 @@ impl Lumen {
 
     /// Place a newly mapped X11 window: centered (dialogs over their parent),
     /// clamped to the work area, or fullscreen when it asked for that or is
-    /// as large as the output (games that predate _NET_WM_STATE_FULLSCREEN
-    /// make an undecorated window the size of the screen).
+    /// a legacy fullscreen window.
     fn manage_x11(&mut self, window: X11Surface) {
         if self.wm.find_x11(&window).is_some() {
             return;
@@ -506,8 +505,8 @@ impl Lumen {
         let id = self.wm.add(Window::new_x11_window(window.clone()));
         let (work, out) = (self.work_area(), self.output_rect());
         let geo = window.geometry();
-        let dialog = window.is_transient_for().is_some() || matches!(window.window_type(), Some(WmWindowType::Dialog));
-        let covers_output = geo.size.w as f64 >= out.size.w && geo.size.h as f64 >= out.size.h;
+        let legacy = legacy_fullscreen(&window, geo, out);
+        let geo = Rectangle::new(geo.loc, crate::wm::clamp_x11_size(&window, geo.size));
         let size = Size::<i32, Logical>::from((
             geo.size.w.clamp(1, work.size.w.max(1.0) as i32),
             geo.size.h.clamp(1, work.size.h.max(1.0) as i32),
@@ -519,8 +518,12 @@ impl Lumen {
             w.target = loc;
             w.pos.snap(loc.x, loc.y);
         }
-        if window.is_fullscreen() || (covers_output && !dialog) {
+        let asked = window.is_fullscreen();
+        if asked || legacy {
             self.wm.set_layout(id, Layout::Fullscreen { restore: work }, work, out);
+            if let Some(w) = self.wm.get_mut(id) {
+                w.legacy_fullscreen = !asked;
+            }
         } else if window.is_maximized() {
             self.wm.set_layout(id, Layout::Maximized { restore: work }, work, out);
         } else {
@@ -721,19 +724,37 @@ impl XwmHandler for Lumen {
         };
         let (work, out) = (self.work_area(), self.output_rect());
         let Some(win) = self.wm.get(id) else { return };
-        if !matches!(win.layout, Layout::Floating) {
-            // Maximized, tiled and fullscreen windows keep the geometry the
-            // layout gives them (smithay re-sends it as a synthetic configure).
-            return;
-        }
         let cur = window.geometry();
         let size = Size::<i32, Logical>::from((
             w.map(|v| v as i32).unwrap_or(cur.size.w).max(1),
             h.map(|v| v as i32).unwrap_or(cur.size.h).max(1),
         ));
-        if size.w as f64 >= out.size.w && size.h as f64 >= out.size.h {
-            // A game switching to "fullscreen" by covering the screen.
+        let size = crate::wm::clamp_x11_size(&window, size);
+        let smaller = (size.w as f64) < out.size.w || (size.h as f64) < out.size.h;
+        if win.legacy_fullscreen && smaller {
+            // A game leaving its legacy fullscreen: a window of the size it
+            // asks for, centered.
+            let size = Size::from((size.w.min(work.size.w as i32), size.h.min(work.size.h as i32)));
+            let loc = (work.loc.x + ((work.size.w - size.w as f64) / 2.0).round(), work.loc.y + ((work.size.h - size.h as f64) / 2.0).round());
+            if let Some(win) = self.wm.get_mut(id) {
+                win.layout = Layout::Fullscreen { restore: Rectangle::new(loc.into(), size.to_f64()) };
+            }
+            self.wm.set_layout(id, Layout::Floating, work, out);
+            self.queue_redraw_all();
+            return;
+        }
+        if !matches!(win.layout, Layout::Floating) {
+            // Maximized, tiled and fullscreen windows keep the geometry the
+            // layout gives them (smithay re-sends it as a synthetic configure).
+            return;
+        }
+        let at = Point::<i32, Logical>::from((x.unwrap_or(cur.loc.x), y.unwrap_or(cur.loc.y)));
+        if legacy_fullscreen(&window, Rectangle::new(at, size), out) {
+            // A game switching to fullscreen the old way: covering the screen.
             self.wm.set_layout(id, Layout::Fullscreen { restore: work }, work, out);
+            if let Some(w) = self.wm.get_mut(id) {
+                w.legacy_fullscreen = true;
+            }
             self.queue_redraw_all();
             return;
         }
@@ -850,6 +871,17 @@ impl XwmHandler for Lumen {
     fn disconnected(&mut self, _xwm: XwmId) {
         self.xwayland_lost("Xwayland connection lost");
     }
+}
+
+/// Games that predate _NET_WM_STATE_FULLSCREEN go fullscreen with an
+/// undecorated window exactly covering the screen (the rule Mutter uses too):
+/// such a window is made fullscreen. A large but decorated window, or one
+/// placed elsewhere (an app restoring its size from a bigger monitor) is not.
+fn legacy_fullscreen(window: &X11Surface, geo: Rectangle<i32, Logical>, out: Rectangle<f64, Logical>) -> bool {
+    let dialog = window.is_transient_for().is_some() || matches!(window.window_type(), Some(WmWindowType::Dialog));
+    // smithay's "decorated" means decorated by the client (or not at all):
+    // _MOTIF_WM_HINTS asks the window manager for no decorations.
+    !dialog && window.is_decorated() && geo.to_f64() == out
 }
 
 /// Keyboard focus for a window: X11 windows through their X11 surface (so the
