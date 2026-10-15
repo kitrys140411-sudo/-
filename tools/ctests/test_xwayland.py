@@ -562,3 +562,68 @@ def test_unmanaged_game_mouse_look(t):
     # Super still escapes.
     c.key("super")
     c.wait(lambda: json.loads(c.ipc("idle"))["pointer_constraint"] is None, 10, "lock released")
+
+
+def off_color(img, color, x0, y0, x1, y1, step=8, tol=12):
+    """How many sampled pixels of a rectangle differ from `color`."""
+    n = 0
+    for y in range(y0, y1, step):
+        for x in range(x0, x1, step):
+            p = img.pixel(x, y)
+            n += any(abs(p[i] - color[i]) > tol for i in range(3))
+    return n
+
+
+def test_shell_ui_above_unmanaged_game(t):
+    """Notifications and the window switcher are drawn over an unmanaged fullscreen game
+    (an override-redirect window), not hidden under it."""
+    c = t.compositor()
+    c.map_window("Other", "--size", "400x300")
+    game = x11_client(c, "--title", "XSdlUi", "--override-fullscreen", "--color", "#406080", name="game")
+    game.wait_line(r"^grab keyboard status=success")
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "game window")
+    c.pointer(1270, 790)
+    time.sleep(0.3)
+    color = (0x40, 0x60, 0x80)
+    base = off_color(c.screenshot("game"), color, 0, 40, 1280, 800)
+    t.check(base < 10, f"game not covering the screen: {base} other pixels")
+    c.ipc("notify Battery low|10% left")
+    time.sleep(0.6)
+    shown = off_color(c.screenshot("notification"), color, 0, 0, 1280, 800)
+    t.check(shown > base + 40, f"notification hidden under the game ({shown} other pixels)")
+    c.key_down("alt")
+    c.key("tab")
+    c.wait(lambda: c.shell()["switcher"], 5, "switcher")
+    time.sleep(0.5)
+    sw = off_color(c.screenshot("switcher"), color, 200, 250, 1080, 550)
+    c.key_up("alt")
+    t.check(sw > 100, f"switcher hidden under the game ({sw} other pixels)")
+
+
+def test_x11_menu_stays_on_its_workspace(t):
+    """An X11 menu belongs to its app's workspace: switching away hides it and it takes
+    no input there."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XWsMenu", "--popup", "--size", "600x400", "--color", "#7aa2f7")
+    px, py = w["x"] + 100, w["y"] + 80
+    c.pointer(px, py)
+    c.click(code=BTN_RIGHT)
+    cl.wait_line(r"^popup event=open")
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "menu")
+    t.check(xinfo(c)["overrides"][0]["ws"] == 0, xinfo(c)["overrides"])
+    c.action("workspace", 1)
+    c.settle()
+    img = c.screenshot("ws2")
+    r, g, b = img.mean(int(px) + 60, int(py) + 40, int(px) + 140, int(py) + 80)
+    t.check(not (r > 180 and g > 140 and b < 140), f"menu drawn on workspace 2: {(r, g, b)}")
+    other, wo = c.map_window("Ws2 app", "--size", "800x600")
+    n = len(cl.lines)
+    c.click(px + 50, py + 50)
+    time.sleep(0.3)
+    t.check(not [line for line in cl.lines[n:] if "surface=popup" in line], cl.lines[n:])
+    t.check(c.window("Ws2 app")["focused"], c.window("Ws2 app"))
+    c.action("workspace", 0)
+    c.settle()
+    img = c.screenshot("ws1")
+    r, g, b = img.mean(int(px) + 60, int(py) + 40, int(px) + 140, int(py) + 80)
+    t.check(r > 180 and g > 140 and b < 140, f"menu not back on workspace 1: {(r, g, b)}")

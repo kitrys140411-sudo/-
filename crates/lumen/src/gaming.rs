@@ -110,7 +110,7 @@ impl Lumen {
         if self.focused_surface().as_ref() == Some(root) {
             return true;
         }
-        let Some(or) = self.wm.overrides.iter().find(|o| o.wl_surface().as_ref() == Some(root)) else { return false };
+        let Some(or) = self.wm.override_with(root).map(|o| &o.x) else { return false };
         let nothing_focused = self.seat.get_keyboard().is_none_or(|k| k.current_focus().is_none());
         self.x11_focused() || (nothing_focused && or.geometry().to_f64().contains_rect(self.output_rect()))
     }
@@ -225,7 +225,7 @@ impl Lumen {
             s.alive() && {
                 let root = root_surface(s);
                 self.wm.find_toplevel(&root).and_then(|id| self.wm.get(id)).is_some_and(|w| w.mapped && w.ws == self.wm.current)
-                    || self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(&root))
+                    || self.wm.override_with(&root).is_some_and(|o| o.ws == self.wm.current)
             }
         })
     }

@@ -162,6 +162,15 @@ impl Win {
     }
 }
 
+/// An X11 override-redirect window: a menu, tooltip or drag icon, or an
+/// unmanaged fullscreen game.
+pub struct Override {
+    pub x: X11Surface,
+    /// The workspace of its app's window (or the current one when it
+    /// appeared): it is drawn and takes input there only.
+    pub ws: usize,
+}
+
 /// A window that is gone but still animating out, drawn from a snapshot.
 pub struct Closing {
     pub image: crate::render::elements::Image,
@@ -188,8 +197,8 @@ pub struct Wm {
     pub windows: Vec<Win>,
     /// X11 override-redirect windows (menus, tooltips, drag icons), bottom to
     /// top. Not managed: they sit where the X client put them, above every
-    /// managed window.
-    pub overrides: Vec<X11Surface>,
+    /// managed window of their workspace.
+    pub overrides: Vec<Override>,
     pub closing: Vec<Closing>,
     pub current: usize,
     /// Animated workspace position (fractional while switching).
@@ -422,7 +431,7 @@ impl Wm {
     /// An X11 override-redirect window covers `out`: an unmanaged
     /// fullscreen game (SDL 1.2, some Wine games), drawn above everything.
     pub fn covered_by_override(&self, out: Rectangle<f64, Logical>) -> bool {
-        self.overrides.iter().any(|o| o.wl_surface().is_some() && o.geometry().to_f64().contains_rect(out))
+        self.overrides.iter().any(|o| o.ws == self.current && o.x.wl_surface().is_some() && o.x.geometry().to_f64().contains_rect(out))
     }
 
     /// Topmost mapped window on the current workspace (for focus fallback).
@@ -641,7 +650,7 @@ impl Wm {
 
     /// The override-redirect window (X11 menu, tooltip) under a point.
     pub fn override_surface_under(&self, p: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        for x in self.overrides.iter().rev() {
+        for x in self.overrides.iter().rev().filter(|o| o.ws == self.current).map(|o| &o.x) {
             let geo = x.geometry().to_f64();
             if !geo.contains(p) {
                 continue;
@@ -654,9 +663,22 @@ impl Wm {
         None
     }
 
+    fn overrides_on_current(&self, x: &X11Surface) -> bool {
+        self.overrides.iter().any(|o| o.ws == self.current && same_x11(&o.x, x))
+    }
+
+    /// The override-redirect window with this surface.
+    pub fn override_with(&self, surface: &WlSurface) -> Option<&Override> {
+        self.overrides.iter().find(|o| o.x.wl_surface().as_ref() == Some(surface))
+    }
+
     /// The override-redirect window (an X11 menu, an unmanaged game) under a point.
     pub fn override_at(&self, p: Point<f64, Logical>) -> Option<&X11Surface> {
-        self.overrides.iter().rev().find(|x| x.wl_surface().is_some() && x.geometry().to_f64().contains(p))
+        self.overrides
+            .iter()
+            .rev()
+            .map(|o| &o.x)
+            .find(|x| self.overrides_on_current(x) && x.wl_surface().is_some() && x.geometry().to_f64().contains(p))
     }
 
     /// Window (not surface) under a point, by geometry only.

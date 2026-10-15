@@ -176,6 +176,8 @@ impl Ui<'_, '_, '_> {
 }
 
 /// Shell elements drawn above windows, front first.
+/// `between` adds what goes below the transient UI (switcher, notifications,
+/// OSD, menus) and above the panel and the dock: X11 override-redirect windows.
 pub fn overlay_elements(
     r: &mut GlesRenderer,
     ctx: &mut SceneCtx,
@@ -183,10 +185,14 @@ pub fn overlay_elements(
     out: Rect,
     scale: f64,
     elements: &mut Vec<LumenElement>,
+    between: &mut dyn FnMut(&mut GlesRenderer, &mut SceneCtx, &mut Vec<LumenElement>),
 ) {
-    let Some(prog) = ctx.rs.shaders.as_ref().map(|s| s.rect.clone()) else { return };
+    let Some(prog) = ctx.rs.shaders.as_ref().map(|s| s.rect.clone()) else {
+        between(r, ctx, elements);
+        return;
+    };
     ctx.shell.hits.clear();
-    let mut ui = Ui { r, ctx, out, scale, output: output.name(), elements, prog };
+    let mut ui = Ui { r, ctx, out, scale, output: output.name(), elements, prog: prog.clone() };
     let overview = ui.ctx.shell.overview_progress();
     // A fullscreen window on top (or an unmanaged X11 game covering the
     // output) hides the panel and the dock (unless the overview is shown).
@@ -202,6 +208,9 @@ pub fn overlay_elements(
     popover(&mut ui);
     notifications(&mut ui);
     switcher(&mut ui);
+    let Ui { r, ctx, elements, .. } = ui;
+    between(r, ctx, elements);
+    let mut ui = Ui { r, ctx, out, scale, output: output.name(), elements, prog };
     if !fullscreen {
         panel(&mut ui);
     }

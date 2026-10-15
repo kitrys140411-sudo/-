@@ -60,7 +60,7 @@ use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
 
 use crate::focus::FocusTarget;
 use crate::state::Lumen;
-use crate::wm::{same_x11, Layout};
+use crate::wm::{same_x11, Layout, Override};
 
 /// Restart a crashing Xwayland up to this many times in a row.
 const MAX_RESTARTS: u32 = 3;
@@ -467,7 +467,7 @@ impl Lumen {
     /// client requests, so the next key already goes to the focused window.
     pub fn check_x11_keyboard_grab(&mut self) {
         let Some(g) = self.xwayland.keyboard_grab.as_mut() else { return };
-        let shown = self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(&g.surface));
+        let shown = self.wm.override_with(&g.surface).is_some();
         g.seen |= shown;
         if g.resource.is_alive() && g.surface.alive() && (shown || !g.seen) {
             return;
@@ -527,6 +527,20 @@ impl Lumen {
             self.wm.configure_x11(id);
         }
         tracing::debug!(id, title = %window.title(), class = %window.class(), "X11 window managed");
+    }
+
+    /// The workspace an override-redirect window belongs to: that of the
+    /// window it is transient for, else of its X client's focused or topmost
+    /// window (an X client's resource ids share their upper bits: X servers
+    /// give each client a 21-bit id range), else the current one.
+    fn override_workspace(&self, window: &X11Surface) -> usize {
+        let client = |id: u32| id >> 21;
+        let x11 = |w: &&crate::wm::Win| w.mapped && w.x11().is_some();
+        let parent = window.is_transient_for().and_then(|p| self.wm.windows.iter().filter(x11).find(|w| w.x11().is_some_and(|x| x.window_id() == p)));
+        let same_client = |w: &&crate::wm::Win| w.x11().is_some_and(|x| client(x.window_id()) == client(window.window_id()));
+        let focused = self.wm.focused.and_then(|id| self.wm.get(id)).filter(x11).filter(same_client);
+        let any = || self.wm.windows.iter().rev().filter(x11).find(same_client);
+        parent.or(focused).or_else(any).map(|w| w.ws).unwrap_or(self.wm.current)
     }
 
     /// The X11 window of a managed window id.
@@ -607,8 +621,8 @@ impl XWaylandKeyboardGrabHandler for Lumen {
         }
         // Not managed: an override-redirect window, possibly one whose
         // surface is not associated yet (a menu grabbing right after mapping).
-        let or = self.wm.overrides.iter().find(|o| o.wl_surface().as_ref() == Some(&surface));
-        let covers = or.is_some_and(|o| o.geometry().to_f64().contains_rect(self.output_rect()));
+        let or = self.wm.override_with(&surface);
+        let covers = or.is_some_and(|o| o.x.geometry().to_f64().contains_rect(self.output_rect()));
         let x11_or_nothing = match self.wm.focused.and_then(|id| self.wm.get(id)) {
             Some(w) => w.x11().is_some() || self.x11_focused(),
             None => true,
@@ -653,15 +667,16 @@ impl XwmHandler for Lumen {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.wm.overrides.retain(|o| !same_x11(o, &window));
-        self.wm.overrides.push(window);
+        self.wm.overrides.retain(|o| !same_x11(&o.x, &window));
+        let ws = self.override_workspace(&window);
+        self.wm.overrides.push(Override { x: window, ws });
         self.refresh_pointer_focus();
         self.queue_redraw_all();
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if window.is_override_redirect() {
-            self.wm.overrides.retain(|o| !same_x11(o, &window));
+            self.wm.overrides.retain(|o| !same_x11(&o.x, &window));
             self.check_x11_keyboard_grab();
             self.refresh_pointer_focus();
             self.queue_redraw_all();
@@ -675,7 +690,7 @@ impl XwmHandler for Lumen {
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let before = self.wm.overrides.len();
-        self.wm.overrides.retain(|o| !same_x11(o, &window));
+        self.wm.overrides.retain(|o| !same_x11(&o.x, &window));
         if let Some(id) = self.x11_id(&window) {
             self.window_gone(id);
         } else if before != self.wm.overrides.len() {

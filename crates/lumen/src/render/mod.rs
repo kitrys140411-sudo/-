@@ -361,13 +361,19 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         ctx.rs.aliases.clear();
     }
 
-    // Cursor (and a drag icon) on top, X11 menus and tooltips, then the shell UI.
+    // Cursor (and a drag icon) on top, the shell's transient UI (switcher,
+    // notifications, OSD...), X11 menus, tooltips and unmanaged games, then
+    // the panel and the dock (menus of X11 apps may cover those).
     ctx.rs.glass_requests.clear();
     cursor_elements(r, ctx, out_rect, scale, &mut elements);
     let overview = ctx.shell.overview_progress();
-    override_elements(r, ctx.wm, out_rect, scale, (1.0 - overview) as f32, &mut elements);
+    let mut overrides = |r: &mut GlesRenderer, ctx: &mut SceneCtx, elements: &mut Vec<LumenElement>| {
+        override_elements(r, ctx.wm, out_rect, scale, (1.0 - overview) as f32, elements);
+    };
     if ctx.primary.as_deref().is_none_or(|p| p == out_name) {
-        crate::shell::render::overlay_elements(r, ctx, output, out_rect, scale, &mut elements);
+        crate::shell::render::overlay_elements(r, ctx, output, out_rect, scale, &mut elements, &mut overrides);
+    } else {
+        overrides(r, ctx, &mut elements);
     }
 
     // Overview slots of every workspace on screen (several while sliding);
@@ -559,7 +565,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
 }
 
 /// X11 override-redirect windows (menus, tooltips) where their client put
-/// them, top first. They fade out with the overview.
+/// them, top first, on their workspace. They fade out with the overview.
 fn override_elements(
     r: &mut GlesRenderer,
     wm: &Wm,
@@ -571,8 +577,11 @@ fn override_elements(
     if alpha <= 0.0 {
         return;
     }
-    for x in wm.overrides.iter().rev() {
-        let geo = x.geometry().to_f64();
+    for o in wm.overrides.iter().rev() {
+        let x = &o.x;
+        let ws_dx = wm.ws_offset(o.ws) * out_rect.size.w;
+        let mut geo = x.geometry().to_f64();
+        geo.loc.x += ws_dx;
         let Some(surface) = x.wl_surface() else { continue };
         if !x.alive() || !geo.overlaps(out_rect) {
             continue;

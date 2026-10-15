@@ -507,16 +507,17 @@ impl Lumen {
             .overrides
             .iter()
             .map(|o| {
-                let g = o.geometry();
+                let g = o.x.geometry();
                 format!(
-                    "{{\"title\":{},\"class\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"has_surface\":{}}}",
-                    json_str(&o.title()),
-                    json_str(&o.class()),
+                    "{{\"title\":{},\"class\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"has_surface\":{},\"ws\":{}}}",
+                    json_str(&o.x.title()),
+                    json_str(&o.x.class()),
                     g.loc.x,
                     g.loc.y,
                     g.size.w,
                     g.size.h,
-                    o.wl_surface().is_some()
+                    o.x.wl_surface().is_some(),
+                    o.ws
                 )
             })
             .collect();
