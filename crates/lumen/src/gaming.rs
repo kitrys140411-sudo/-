@@ -181,7 +181,11 @@ impl Lumen {
                     local.y = local.y.clamp(0.0, (size.h - 1).max(0) as f64);
                 }
                 if let Some(r) = region.as_ref() {
-                    local = confine_to_region(r, self.pointer_pos - origin, local);
+                    // Regions are in the client's coordinates (Xwayland may
+                    // have a client scale).
+                    let cs = surface.client().and_then(|c| c.get_data::<smithay::xwayland::XWaylandClientData>().map(|d| d.compositor_state.client_scale())).unwrap_or(1.0);
+                    let from = (self.pointer_pos - origin).upscale(cs);
+                    local = confine_to_region(r, from, local.upscale(cs)).downscale(cs);
                 }
                 *pos = origin + local;
                 false

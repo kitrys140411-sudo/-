@@ -664,6 +664,11 @@ pub fn scanout_check(r: &mut GlesRenderer, elements: &[LumenElement], size: Size
     let opaque = top.opaque_regions(s).iter().any(|r| r.contains_rect(full));
     let alpha = top.alpha() >= 1.0;
     let storage = top.underlying_storage(r).is_some();
+    // The buffer must have the output's size: KMS can only scale through a
+    // plane scaler, which the primary plane rarely has (an X11 game at the
+    // logical resolution of a scaled output is stretched by composition).
+    let src = top.transform().transform_size(top.src().size);
+    let unscaled = (src.w - size.w as f64).abs() < 0.5 && (src.h - size.h as f64).abs() < 0.5;
     let client = matches!(top, LumenElement::Window(_) | LumenElement::Surface(_));
     let reason = if !client {
         "compositor element on top"
@@ -675,12 +680,16 @@ pub fn scanout_check(r: &mut GlesRenderer, elements: &[LumenElement], size: Size
         "translucent"
     } else if !storage {
         "no client buffer (clipped, transformed or aliased)"
+    } else if !unscaled {
+        "scaled buffer"
     } else {
         "ok"
     };
     format!(
-        "{{\"candidate\":{},\"top\":\"{kind}\",\"covers\":{covers},\"opaque\":{opaque},\"alpha\":{alpha},\"storage\":{storage},\"elements\":{},\"reason\":\"{reason}\"}}",
+        "{{\"candidate\":{},\"top\":\"{kind}\",\"covers\":{covers},\"opaque\":{opaque},\"alpha\":{alpha},\"storage\":{storage},\"buffer\":[{},{}],\"elements\":{},\"reason\":\"{reason}\"}}",
         reason == "ok",
+        src.w.round(),
+        src.h.round(),
         elements.len()
     )
 }

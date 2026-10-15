@@ -363,6 +363,7 @@ impl Lumen {
         }
         let p = self.pointer_pos;
         self.pointer_pos = (p.x.clamp(out.loc.x, out.loc.x + out.size.w - 1.0), p.y.clamp(out.loc.y, out.loc.y + out.size.h - 1.0)).into();
+        self.update_xwayland_scale();
     }
 
     /// Ask every output to redraw at the next opportunity.

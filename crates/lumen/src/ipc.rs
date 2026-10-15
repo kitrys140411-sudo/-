@@ -522,7 +522,7 @@ impl Lumen {
             })
             .collect();
         format!(
-            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"pss_kib\":{},\"private_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"keyboard_grab\":{},\"overrides\":[{}]}}",
+            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"pss_kib\":{},\"private_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"keyboard_grab\":{},\"scale_mode\":\"{}\",\"client_scale\":{},\"overrides\":[{}]}}",
             x.enabled,
             x.ready,
             opt(x.display_env().map(|d| json_str(&d))),
@@ -538,6 +538,8 @@ impl Lumen {
                 Some(g) => format!("{{\"active\":{}}}", g.active),
                 None => "null".into(),
             },
+            x.scale_mode.name(),
+            x.client_scale,
             overrides.join(","),
         )
     }

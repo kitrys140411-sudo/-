@@ -680,3 +680,66 @@ def test_x11_state_set_before_mapping(t):
     c.settle()
     wf = c.window("XPreFull")
     t.check((wf["x"], wf["y"], wf["w"], wf["h"]) == (0, 0, 1280, 800), wf)
+
+
+def xdpyinfo_dimensions(c):
+    out = x11_run(c, "xdpyinfo").stdout
+    m = re.search(r"dimensions:\s+(\d+)x(\d+) pixels", out)
+    return int(m.group(1)), int(m.group(2))
+
+
+def test_x11_native_resolution_at_125(t):
+    """A 1920x1080 laptop panel at scale 1.25: by default X11 sees the physical size (games
+    get the native resolution, buffers are shown 1:1 and can be scanned out);
+    LUMEN_XWAYLAND_SCALE=scaled gives the logical size, scaled up by the compositor."""
+    c = t.compositor(size=(1920, 1080), scale=1.25)
+    x = xinfo(c)
+    t.check(x["scale_mode"] == "auto" and x["client_scale"] == 1.25, x)
+    t.check(xdpyinfo_dimensions(c) == (1920, 1080), xdpyinfo_dimensions(c))
+    cl, w = map_x11(c, "XNative", "--fullscreen", "--opaque", "--color", "#203040")
+    c.wait(lambda: c.window("XNative")["layout"] == "fullscreen", 10, "fullscreen")
+    c.settle()
+    w = c.window("XNative")
+    t.check((w["x"], w["y"], w["w"], w["h"]) == (0, 0, 1536, 864), w)
+    cl.wait_line(r"^configure x=0 y=0 w=1920 h=1080 synthetic=1")
+    time.sleep(0.3)
+    s = json.loads(c.ipc("scene"))
+    t.check(s["candidate"] and s["buffer"] == [1920, 1080], s)
+    # Pointer input arrives in X (physical) coordinates.
+    c.click(400, 300)
+    cl.wait_line(r"^button code=1 state=pressed x=500 y=375")
+    img = c.screenshot("native")
+    r, g, b = img.mean(800, 400, 1200, 700)
+    t.check(abs(r - 0x20) < 8 and abs(g - 0x30) < 8 and abs(b - 0x40) < 8, f"{(r, g, b)}")
+
+    c2 = t.compositor(size=(1920, 1080), scale=1.25, env={"LUMEN_XWAYLAND_SCALE": "scaled"})
+    t.check(xinfo(c2)["client_scale"] == 1.0, xinfo(c2))
+    t.check(xdpyinfo_dimensions(c2) == (1536, 864), xdpyinfo_dimensions(c2))
+    cl2, _ = map_x11(c2, "XScaled", "--fullscreen", "--opaque")
+    c2.wait(lambda: c2.window("XScaled")["layout"] == "fullscreen", 10, "fullscreen")
+    c2.settle()
+    cl2.wait_line(r"^configure x=0 y=0 w=1536 h=864 synthetic=1")
+    time.sleep(0.3)
+    s = json.loads(c2.ipc("scene"))
+    t.check(not s["candidate"] and s["reason"] == "scaled buffer", s)
+
+
+def test_x11_native_at_scale_2(t):
+    """LUMEN_XWAYLAND_SCALE=native at scale 2: X11 windows are sized in physical pixels,
+    shown 1:1, and menus still land where the client puts them."""
+    c = t.compositor(scale=2.0, env={"LUMEN_XWAYLAND_SCALE": "native"})
+    t.check(xinfo(c)["client_scale"] == 2.0 and xdpyinfo_dimensions(c) == (1280, 800), xinfo(c))
+    cl, w = map_x11(c, "XHiNative", "--popup", "--size", "600x360", "--color", "#7aa2f7")
+    t.check((w["w"], w["h"]) == (300, 180), w)
+    px, py = w["x"] + 40, w["y"] + 50
+    c.pointer(px, py)
+    c.click(code=BTN_RIGHT)
+    m = cl.wait_line(r"^popup event=open x=80 y=100 root_x=(-?\d+) root_y=(-?\d+)")
+    t.check((int(m.group(1)), int(m.group(2))) == (int(2 * px), int(2 * py)), m.group(0))
+    c.wait(lambda: xinfo(c)["overrides"] and xinfo(c)["overrides"][0]["has_surface"], 10, "menu")
+    o = xinfo(c)["overrides"][0]
+    t.check((o["x"], o["y"], o["w"], o["h"]) == (int(px), int(py), 100, 60), o)
+    time.sleep(0.3)
+    img = c.screenshot("native2")
+    r, g, b = img.mean(int(2 * px) + 40, int(2 * py) + 30, int(2 * px) + 160, int(2 * py) + 90)
+    t.check(r > 180 and g > 140 and b < 140, f"menu color {(r, g, b)}")

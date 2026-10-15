@@ -26,10 +26,21 @@
 //! X clients may read a Wayland selection only while an X11 window has
 //! keyboard focus (pasting into the focused app), like a Wayland client.
 //!
-//! HiDPI: Xwayland runs with client scale 1. X11 windows are laid out in
-//! logical pixels and scaled up by the compositor on outputs with scale > 1
-//! (correct size, softer text); games that render at the logical resolution
-//! cost less on a 4K panel this way.
+//! HiDPI (`LUMEN_XWAYLAND_SCALE`): X11 has no per-window scale, so Xwayland
+//! sees either the logical screen or the physical one.
+//!  * `scaled`: X11 apps see the logical size (1536x864 on a 1920x1080 panel
+//!    at 1.25) and are scaled up by the compositor: the right size, but
+//!    softer text, and games cannot use the panel's native resolution.
+//!  * `native`: smithay's client scale for Xwayland equals the output scale,
+//!    so X sees the physical size and its buffers are shown 1:1: sharp, and
+//!    games get every native mode, but apps that do not scale themselves
+//!    (most X11 toolkits without Xft.dpi/GDK_SCALE) look smaller.
+//!  * `auto` (default): native below scale 1.5 (FHD laptops at 1.25, where
+//!    X11 apps are only 20% smaller and games and text gain the most),
+//!    scaled from 1.5 on (4K panels at 2, where native would halve them).
+//!
+//! Window geometry stays logical in the compositor either way: smithay
+//! converts X coordinates, input and xdg-output sizes by the client scale.
 
 use std::os::unix::net::UnixStream;
 use std::process::Stdio;
@@ -101,6 +112,47 @@ pub struct XwaylandState {
     pub keyboard_grab: Option<X11KeyboardGrab>,
     /// Asks [`initial_states`] for the _NET_WM_STATE of windows being mapped.
     state_reader: Option<std::sync::mpsc::Sender<u32>>,
+    pub scale_mode: XScale,
+    /// The client scale Xwayland has (1: X sees the logical screen).
+    pub client_scale: f64,
+}
+
+/// How X11 apps are scaled on outputs with a scale other than 1 (see the
+/// module documentation).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum XScale {
+    Auto,
+    Native,
+    Scaled,
+}
+
+impl XScale {
+    /// `LUMEN_XWAYLAND_SCALE`; unset or unknown: auto.
+    pub fn parse(v: Option<&str>) -> XScale {
+        match v.map(str::trim) {
+            Some("native") => XScale::Native,
+            Some("scaled" | "logical") => XScale::Scaled,
+            _ => XScale::Auto,
+        }
+    }
+
+    /// The client scale for Xwayland on an output of `output_scale`.
+    pub fn client_scale(self, output_scale: f64) -> f64 {
+        match self {
+            XScale::Native => output_scale,
+            XScale::Scaled => 1.0,
+            XScale::Auto if output_scale < 1.5 => output_scale,
+            XScale::Auto => 1.0,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            XScale::Auto => "auto",
+            XScale::Native => "native",
+            XScale::Scaled => "scaled",
+        }
+    }
 }
 
 /// An X client grabbed the keyboard (XGrabKeyboard) on an override-redirect
@@ -153,6 +205,8 @@ impl XwaylandState {
             wl_selection: [None, None],
             keyboard_grab: None,
             state_reader: None,
+            scale_mode: XScale::parse(std::env::var("LUMEN_XWAYLAND_SCALE").ok().as_deref()),
+            client_scale: 1.0,
         }
     }
 
@@ -272,6 +326,9 @@ impl Lumen {
             }
         };
         let display = xwayland.display_number();
+        // Before Xwayland binds the outputs, so it sees the right sizes at once.
+        self.xwayland.client_scale = 1.0;
+        self.set_xwayland_scale(&client);
         // (Not the Wayland client's credentials: Xwayland's connection is
         // one end of a socketpair made here, so those name the compositor.)
         let pid = xwayland_child_pid();
@@ -421,6 +478,30 @@ impl Lumen {
             self.notify("X11 apps unavailable", "Xwayland keeps failing; see xwayland.log in the runtime directory.");
         }
         self.queue_redraw_all();
+    }
+
+    /// Give Xwayland the client scale [`XScale`] asks for on the primary
+    /// output (again when that output's scale changes): outputs re-announce
+    /// their sizes to it.
+    pub fn update_xwayland_scale(&mut self) {
+        if let Some(client) = self.xwayland.client.clone() {
+            self.set_xwayland_scale(&client);
+        }
+    }
+
+    fn set_xwayland_scale(&mut self, client: &Client) {
+        let output_scale = self.primary_output().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0);
+        let scale = self.xwayland.scale_mode.client_scale(output_scale);
+        let Some(data) = client.get_data::<smithay::xwayland::XWaylandClientData>() else { return };
+        if (data.compositor_state.client_scale() - scale).abs() < f64::EPSILON && self.xwayland.client_scale == scale {
+            return;
+        }
+        data.compositor_state.set_client_scale(scale);
+        self.xwayland.client_scale = scale;
+        tracing::info!(scale, mode = self.xwayland.scale_mode.name(), "Xwayland client scale");
+        for o in self.outputs.clone() {
+            o.change_current_state(None, None, None, None);
+        }
     }
 
     /// Mirror our stacking order of X11 windows in the X server (it decides
