@@ -676,3 +676,115 @@ fn readme_example_app() {
     assert_eq!(app.name, "Ada");
     assert_eq!(app.count, 0, "Ctrl+R is not a text editing key, so it reaches the app");
 }
+
+/// The README's smaller snippets (a toolbar row, a thread's result, a stream
+/// of values, the file chooser) compile as written and behave as described.
+#[test]
+fn readme_snippets() {
+    use crate::prelude::*;
+    use std::path::Path;
+
+    #[derive(Default)]
+    struct Snippets {
+        query: String,
+        path: PathBuf,
+        thumb: Option<Task<Result<Pixels, String>>>,
+        image: Option<Image>,
+        samples: Option<Receiver<f32>>,
+        cpu: Vec<f32>,
+        chooser: Option<FileChooser>,
+        opened: Option<PathBuf>,
+    }
+
+    impl Snippets {
+        fn open(&mut self, path: &Path) {
+            self.opened = Some(path.to_path_buf());
+        }
+    }
+
+    fn read_cpu_usage() -> f32 {
+        0.25
+    }
+
+    impl App for Snippets {
+        fn view(&mut self, ui: &mut Ui) {
+            Frame::row().fill_width().padding((10.0, 16.0)).gap(8.0).show(ui, |ui| {
+                ui.search_input("find", &mut self.query);
+                ui.spacer(); // Fill(1) space: pushes the rest right
+                ui.tool_button(Icon::Refresh, "Reload");
+            });
+
+            // One result: run a closure on a new thread.
+            if self.thumb.is_none() {
+                let path = self.path.clone();
+                self.thumb = Some(ui.spawn(move || Pixels::load_thumbnail(&path, 256)));
+            }
+            if let Some(Ok(p)) = self.thumb.as_mut().and_then(|t| t.take()) {
+                self.image = Some(Image::from_pixels(p));
+            }
+
+            // A stream of values: a channel from a long-running thread.
+            if self.samples.is_none() {
+                let (tx, rx) = ui.channel();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    if !tx.send(read_cpu_usage()) {
+                        break; // the window is gone
+                    }
+                });
+                self.samples = Some(rx);
+            }
+            if let Some(rx) = &self.samples {
+                for v in rx.drain() {
+                    self.cpu.push(v);
+                }
+            }
+
+            if ui.button("Open…").clicked {
+                self.chooser = Some(FileChooser::open("Open Image").filter("Images", &["*.png", "*.jpg"]));
+            }
+            if let Some(fc) = &mut self.chooser {
+                if let Some(result) = fc.show(ui) {
+                    if let ChooserResult::Chosen(paths) = result {
+                        self.open(&paths[0]);
+                    }
+                    self.chooser = None;
+                }
+            }
+        }
+    }
+
+    let Some(mut h) = harness(900.0, 640.0) else { return };
+    let dir = scratch("readme");
+    let png = dir.join("tiny.png");
+    let mut bytes = Vec::new();
+    {
+        use ::image::ImageEncoder;
+        ::image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(&[255; 4 * 2 * 4], 4, 2, ::image::ExtendedColorType::Rgba8)
+            .unwrap();
+    }
+    std::fs::write(&png, bytes).unwrap();
+    let mut app = Snippets { path: png.clone(), ..Default::default() };
+    for _ in 0..200 {
+        h.frame(&mut app);
+        if app.image.is_some() && app.cpu.len() >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(app.image.is_some(), "the thumbnail decoded on the worker thread reached the view");
+    assert!(app.cpu.len() >= 2 && app.cpu.iter().all(|&v| v == 0.25), "the channel's samples arrive");
+    // Inputs are labelled by their name, icon-only buttons by their icon's name.
+    assert!(h.widget("find").is_some() && h.widget("refresh").is_some());
+
+    h.click("Open…");
+    h.settle(&mut app);
+    assert!(app.chooser.is_some());
+    h.key(Key::Escape, Mods::NONE);
+    h.settle(&mut app);
+    assert!(app.chooser.is_none() && app.opened.is_none(), "Escape cancels the chooser");
+    drop(h);
+    drop(app); // drops the receiver: the sampling thread's next send fails and it ends
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -370,7 +370,10 @@ h.settle(&mut app); // run frames until animations end
 ```
 
 `widgets()` lists every visible labelled widget (`kind`, `label`, `rect`,
-`value`, `focused`, `hovered`, `layer`); `click` refuses a widget that is
+`value`, `focused`, `hovered`, `layer`): buttons, checkboxes, radios, menu
+items, rows, tabs and sidebar entries by their text; inputs, switches,
+sliders and dropdowns by their name; icon-only buttons by their icon's name
+(`ui.tool_button(Icon::Refresh, "Reload")` is `"refresh"`); `click` refuses a widget that is
 covered by a menu, dialog, toast or tooltip, like a real pointer would;
 `log()` returns the event lines listed below. `src/widget_tests.rs` has
 many examples.
