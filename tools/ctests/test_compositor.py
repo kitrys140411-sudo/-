@@ -147,14 +147,15 @@ def red_box(img, step=4):
 
 
 def test_maximize_morphs_geometry(t):
-    # Slow animations so frames in the middle of the morph can be caught.
+    # Slow animations so frames in the middle of the morph can be caught: a debug-build
+    # screenshot takes seconds when the machine is busy (PNG encoding, a parallel QEMU run).
     os.makedirs(t.dir, exist_ok=True)
     theme = os.path.join(t.dir, "slow.toml")
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     with open(os.path.join(root, "rootfs/usr/share/lumen/theme.toml")) as f:
         text = f.read()
     with open(theme, "w") as f:
-        f.write(re.sub(r"(?m)^speed\s*=.*$", "speed = 0.15", text))
+        f.write(re.sub(r"(?m)^speed\s*=.*$", "speed = 0.05", text))
     c = t.compositor(env={"LUMEN_THEME": theme})
     client, w = c.map_window("morph", "--size", "400x300", "--color", "#e01818")
     c.wait(lambda: not c.window("morph")["animating"], 20, "mapped")
