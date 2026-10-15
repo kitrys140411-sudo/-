@@ -131,7 +131,8 @@ Frame::row().fill_width().padding((10.0, 16.0)).gap(8.0).show(ui, |ui| {
 });
 ```
 
-`ui.row`, `ui.column` and `ui.stack` are shorthands with the theme's grid gap;
+`ui.row` and `ui.column` are shorthands with the theme's grid gap (and
+`ui.stack` for a plain stack);
 `ui.space(px)`, `ui.spacer()` and `ui.separator()` fill rows and columns;
 `ui.card(|ui| …)` is a padded rounded panel.
 

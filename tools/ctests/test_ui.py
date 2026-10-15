@@ -435,6 +435,15 @@ def test_live_graph_then_idle(t):
     f1, _ = counters(g)
     t.check(f1 - f0 >= 3, f"a live graph keeps drawing: {f1 - f0} frames in 1.5 s")
     c.screenshot("graphs")
+    # Pictures made on a worker thread arrive as images (textures). (Paused,
+    # the graph stops changing, so the page can settle.)
+    g.click("Pause")
+    g.widget("Resume")
+    g.scroll("usage", 600, "graph")
+    g.widget("image 320x200", "image")
+    c.wait(lambda: len(g.widgets("image")) == 4, 10, "four images")
+    g.settle()
+    c.screenshot("images")
     # Another page: no animations, no samples, no frames, no view runs.
     g.click("Text", "nav")
     c.wait(lambda: title(g) == "Gallery — Text", 10, "Text page")

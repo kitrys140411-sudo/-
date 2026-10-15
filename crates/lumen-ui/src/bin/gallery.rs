@@ -70,6 +70,9 @@ struct Gallery {
     samples: Option<Receiver<Sample>>,
     graphs_visible: Arc<AtomicBool>,
     paused: bool,
+    /// Pictures made on a worker thread, then shown as images.
+    pictures: Option<Task<Vec<Pixels>>>,
+    images: Vec<Image>,
     // Dialogs
     confirm_open: bool,
     rename_open: bool,
@@ -113,6 +116,8 @@ impl Gallery {
             samples: None,
             graphs_visible: Arc::new(AtomicBool::new(false)),
             paused: false,
+            pictures: None,
+            images: Vec::new(),
             confirm_open: false,
             rename_open: false,
             rename_text: String::new(),
@@ -620,6 +625,15 @@ impl Gallery {
                 }
             }
         }
+        // Pictures are rendered on a worker thread (as an app decodes
+        // photos) and become images when they arrive.
+        if self.images.is_empty() && self.pictures.is_none() {
+            self.pictures = Some(ui.spawn(|| (0..3).map(picture).collect()));
+        }
+        if let Some(p) = self.pictures.as_mut().and_then(|t| t.take()) {
+            self.images = p.into_iter().map(Image::from_pixels).collect();
+        }
+        let images = self.images.clone();
         let (cpu, mem) = (self.cpu.clone(), self.mem.clone());
         let paused = &mut self.paused;
         page(ui, "Graphs", "Live data from a background thread, which wakes the window for each sample, and custom drawing on a canvas.", |ui| {
@@ -661,6 +675,23 @@ impl Gallery {
                     p.polyline(&pts, 2.5, pal[3]);
                     p.line(Vec2::new(x0, r.bottom() - 8.0), Vec2::new(x0 + w, r.bottom() - 8.0), 1.0, dim);
                 });
+            });
+            section(ui, "Images", |ui| {
+                if images.is_empty() {
+                    ui.spinner();
+                    return;
+                }
+                Frame::row().gap(12.0).show(ui, |ui| {
+                    // Thumbnails crop to fill their box; the last one shows
+                    // all of a picture, letterboxed.
+                    for img in &images {
+                        ImageView::new(img).fit(Fit::Cover).radius(10.0).width(Size::Px(132.0)).height(Size::Px(96.0)).show(ui);
+                    }
+                    Frame::stack().width(Size::Px(132.0)).height(Size::Px(96.0)).background(ui.theme().input_bg).radius(10.0).show(ui, |ui| {
+                        ImageView::new(&images[0]).radius(4.0).width(Size::FILL).height(Size::FILL).show(ui);
+                    });
+                });
+                ui.caption("Rendered on a worker thread as Pixels, shown as GPU textures: cropped to cover, and contained.");
             });
         });
     }
@@ -830,6 +861,33 @@ fn process(i: usize) -> (String, u32, f32, u32) {
     let h = (i as u32).wrapping_mul(2_654_435_761);
     let name = if i < NAMES.len() { NAMES[i].to_string() } else { format!("{} #{}", NAMES[i % NAMES.len()], i / NAMES.len()) };
     (name, 1 + (h >> 20) % 30_000, ((h >> 8) % 1000) as f32 / 10.0, 40 + (h >> 4) % 40_000)
+}
+
+/// Picture `i` of the Images section: soft light over a two-color
+/// gradient, 320×200, made off the UI thread.
+fn picture(i: usize) -> Pixels {
+    const COLORS: [[(f32, f32, f32); 2]; 3] = [
+        [(0.20, 0.27, 0.62), (0.85, 0.45, 0.62)],
+        [(0.05, 0.36, 0.40), (0.60, 0.85, 0.55)],
+        [(0.45, 0.20, 0.10), (0.98, 0.78, 0.42)],
+    ];
+    let (w, h) = (320u32, 200u32);
+    let [a, b] = COLORS[i % 3];
+    let (cx, cy) = (0.25 + 0.25 * i as f32, 0.35);
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let (u, v) = (x as f32 / w as f32, y as f32 / h as f32);
+            let t = (u * 0.6 + v * 0.4).clamp(0.0, 1.0);
+            let glow = (-((u - cx).powi(2) + (v - cy).powi(2) * 2.5) * 9.0).exp() * 0.35;
+            for (ca, cb) in [(a.0, b.0), (a.1, b.1), (a.2, b.2)] {
+                let c = ca + (cb - ca) * t + glow;
+                data.push((c.clamp(0.0, 1.0) * 255.0) as u8);
+            }
+            data.push(255);
+        }
+    }
+    Pixels::new(w, h, data)
 }
 
 fn legend(ui: &mut Ui, color: Color, text: &str) {
