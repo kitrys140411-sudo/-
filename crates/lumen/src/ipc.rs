@@ -521,7 +521,7 @@ impl Lumen {
             })
             .collect();
         format!(
-            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"pss_kib\":{},\"private_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"overrides\":[{}]}}",
+            "{{\"enabled\":{},\"ready\":{},\"display\":{},\"pid\":{},\"ready_ms\":{},\"rss_kib\":{},\"pss_kib\":{},\"private_kib\":{},\"failures\":{},\"error\":{},\"x11_focused\":{},\"keyboard_grab\":{},\"overrides\":[{}]}}",
             x.enabled,
             x.ready,
             opt(x.display_env().map(|d| json_str(&d))),
@@ -533,6 +533,10 @@ impl Lumen {
             x.failures,
             opt(x.error.as_deref().map(json_str)),
             self.x11_focused(),
+            match &x.keyboard_grab {
+                Some(g) => format!("{{\"active\":{}}}", g.active),
+                None => "null".into(),
+            },
             overrides.join(","),
         )
     }

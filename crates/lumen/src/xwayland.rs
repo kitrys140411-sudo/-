@@ -44,9 +44,10 @@ use smithay::wayland::selection::primary_selection::{
     clear_primary_selection, current_primary_selection_userdata, request_primary_client_selection, set_primary_selection,
 };
 use smithay::wayland::selection::SelectionTarget;
-use smithay::input::keyboard::KeyboardGrab;
 use smithay::input::Seat;
-use smithay::utils::SERIAL_COUNTER;
+use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server::zwp_xwayland_keyboard_grab_v1::ZwpXwaylandKeyboardGrabV1;
+use smithay::reexports::wayland_server::Resource;
+use smithay::utils::{IsAlive, SERIAL_COUNTER};
 use smithay::wayland::xwayland_keyboard_grab::{XWaylandKeyboardGrab, XWaylandKeyboardGrabHandler, XWaylandKeyboardGrabState};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, WmWindowType, XwmId};
@@ -83,6 +84,29 @@ pub struct XwaylandState {
     /// set last (None: X or nobody owns it), handed to a window manager
     /// that attaches later (Xwayland starting, or restarted).
     pub wl_selection: [Option<Vec<String>>; 2],
+    /// An X client's keyboard grab the compositor honours (see [`X11KeyboardGrab`]).
+    pub keyboard_grab: Option<X11KeyboardGrab>,
+}
+
+/// An X client grabbed the keyboard (XGrabKeyboard) on an override-redirect
+/// window, a menu or an unmanaged fullscreen game, and Xwayland asked for
+/// the keys (zwp_xwayland_keyboard_grab_v1). Unlike smithay's own grab
+/// object, which keeps the focus on the grab surface until the client lets
+/// go, this is only a preference of the focus logic ([`Lumen::keyboard_target`]):
+/// the compositor stays in charge. Super shortcuts and the shell run first,
+/// focusing another window explicitly (click, Alt+Tab, the overview, a
+/// workspace switch) suspends the grab, clicking the grab window resumes it,
+/// and when the grab ends or its window goes away the focus returns to the
+/// focused window at once.
+pub struct X11KeyboardGrab {
+    pub surface: WlSurface,
+    /// Destroyed by Xwayland when the X client ungrabs.
+    resource: ZwpXwaylandKeyboardGrabV1,
+    /// False while the user is elsewhere (see above).
+    pub active: bool,
+    /// The grab window was seen among the override-redirect windows (a menu
+    /// may grab before its surface is associated with it).
+    seen: bool,
 }
 
 /// Index into [`XwaylandState::wl_selection`].
@@ -111,6 +135,7 @@ impl XwaylandState {
             enabled,
             error: None,
             wl_selection: [None, None],
+            keyboard_grab: None,
         }
     }
 
@@ -289,6 +314,9 @@ impl Lumen {
             self.window_gone(id);
         }
         self.wm.overrides.clear();
+        if self.xwayland.keyboard_grab.take().is_some() {
+            self.sync_keyboard_focus();
+        }
         let x = &mut self.xwayland;
         x.ready = false;
         x.display = None;
@@ -326,9 +354,67 @@ impl Lumen {
         }
     }
 
-    /// Whether the keyboard focus is on an X11 window.
+    /// Whether the keyboard focus is on a surface of Xwayland: an X11
+    /// window, or a menu or game holding a keyboard grab.
     pub fn x11_focused(&self) -> bool {
-        self.seat.get_keyboard().and_then(|k| k.current_focus()).is_some_and(|f| f.x11().is_some())
+        let Some(client) = self.xwayland.client.as_ref() else { return false };
+        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
+        let surface = focus.and_then(|f| smithay::wayland::seat::WaylandFocus::wl_surface(&f).map(|s| s.into_owned()));
+        surface.is_some_and(|s| s.client().is_some_and(|c| c.id() == client.id()))
+    }
+
+    /// Where keys go: nowhere while the shell has the keyboard (overview,
+    /// switcher, menus), else to an X11 keyboard grab that is in effect, else
+    /// to the focused window.
+    pub fn keyboard_target(&self) -> Option<FocusTarget> {
+        if self.shell.wants_keyboard() {
+            return None;
+        }
+        if let Some(g) = self.xwayland.keyboard_grab.as_ref().filter(|g| g.active) {
+            return Some(FocusTarget::Surface(g.surface.clone()));
+        }
+        self.wm.focused.and_then(|id| self.wm.get(id)).and_then(focus_for)
+    }
+
+    /// Give the keyboard to [`Lumen::keyboard_target`] (no events if it has it already).
+    pub fn sync_keyboard_focus(&mut self) {
+        let target = self.keyboard_target();
+        if let Some(kb) = self.seat.get_keyboard() {
+            kb.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        }
+    }
+
+    /// End the X11 keyboard grab once the X client let go (Xwayland destroys
+    /// the grab object) or its window is gone. Checked after every batch of
+    /// client requests, so the next key already goes to the focused window.
+    pub fn check_x11_keyboard_grab(&mut self) {
+        let Some(g) = self.xwayland.keyboard_grab.as_mut() else { return };
+        let shown = self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(&g.surface));
+        g.seen |= shown;
+        if g.resource.is_alive() && g.surface.alive() && (shown || !g.seen) {
+            return;
+        }
+        tracing::debug!("X11 keyboard grab ended");
+        self.xwayland.keyboard_grab = None;
+        self.sync_keyboard_focus();
+    }
+
+    /// The user chose a window explicitly (even the one that has the focus,
+    /// e.g. Alt+Tab with a single window): an X11 keyboard grab stops
+    /// holding the keys until its window is clicked.
+    pub fn suspend_x11_keyboard_grab(&mut self) {
+        if let Some(g) = self.xwayland.keyboard_grab.as_mut() {
+            g.active = false;
+        }
+    }
+
+    /// A click on an override-redirect window: if it holds the keyboard
+    /// grab, the grab is in effect again.
+    pub fn resume_x11_keyboard_grab(&mut self, surface: &WlSurface) {
+        if let Some(g) = self.xwayland.keyboard_grab.as_mut().filter(|g| !g.active && &g.surface == surface) {
+            g.active = true;
+            self.sync_keyboard_focus();
+        }
     }
 
     /// Place a newly mapped X11 window: centered (dialogs over their parent),
@@ -425,31 +511,47 @@ impl XWaylandShellHandler for Lumen {
 
 /// An X client grabbed the keyboard (XGrabKeyboard) on a window whose
 /// surface does not have the keyboard focus, typically a game's fullscreen
-/// override-redirect window or a menu: Xwayland asks for the focus to stay on
-/// that surface. Compositor shortcuts still run first (Super escapes), and
-/// focusing another window ends the grab.
+/// override-redirect window or a menu: Xwayland asks for the keys to go to
+/// that surface. See [`X11KeyboardGrab`] for how the compositor keeps control.
 impl XWaylandKeyboardGrabHandler for Lumen {
-    /// The focus moves now, not with the next key (smithay's default): the
-    /// first key press would otherwise arrive as already held in the enter
-    /// event, and X clients only see its release.
-    fn grab(&mut self, _surface: WlSurface, seat: Seat<Self>, grab: XWaylandKeyboardGrab<Self>) {
-        let Some(keyboard) = seat.get_keyboard() else { return };
-        let serial = SERIAL_COUNTER.next_serial();
-        let focus = grab.start_data().focus.clone();
-        if keyboard.is_grabbed() {
-            keyboard.unset_grab(self);
+    /// Granted to override-redirect windows only, and only while an X11 window
+    /// (or nothing) has the focus or when the window covers the output (an
+    /// unmanaged fullscreen game, which is drawn above everything): an X
+    /// client in the background cannot take the keys from a Wayland app.
+    /// Grabs on managed windows need nothing (or would steal the focus).
+    /// The focus moves now, not with the next key: that key press would
+    /// otherwise arrive as already held in the enter event, and X clients
+    /// would only see its release.
+    fn grab(&mut self, surface: WlSurface, _seat: Seat<Self>, grab: XWaylandKeyboardGrab<Self>) {
+        if self.wm.find_toplevel(&surface).is_some() {
+            tracing::debug!("X11 keyboard grab on a managed window: nothing to do");
+            return;
         }
-        keyboard.set_focus(self, focus, serial);
-        keyboard.set_grab(self, grab, serial);
-        tracing::debug!("X11 keyboard grab");
+        // Not managed: an override-redirect window, possibly one whose
+        // surface is not associated yet (a menu grabbing right after mapping).
+        let or = self.wm.overrides.iter().find(|o| o.wl_surface().as_ref() == Some(&surface));
+        let covers = or.is_some_and(|o| o.geometry().to_f64().contains_rect(self.output_rect()));
+        let x11_or_nothing = match self.wm.focused.and_then(|id| self.wm.get(id)) {
+            Some(w) => w.x11().is_some() || self.x11_focused(),
+            None => true,
+        };
+        if !covers && !x11_or_nothing {
+            tracing::debug!("X11 keyboard grab denied: a Wayland window has the focus");
+            return;
+        }
+        tracing::debug!(covers, "X11 keyboard grab");
+        let seen = or.is_some();
+        self.xwayland.keyboard_grab = Some(X11KeyboardGrab { surface, resource: grab.grab().clone(), active: true, seen });
+        self.sync_keyboard_focus();
     }
 
+    /// Any surface of Xwayland qualifies here (a menu may grab before its
+    /// surface is associated with its X11 window); [`Self::grab`] decides.
     fn keyboard_focus_for_xsurface(&self, surface: &WlSurface) -> Option<FocusTarget> {
         if let Some(w) = self.wm.windows.iter().find(|w| w.x11().is_some() && w.surface().as_ref() == Some(surface)) {
             return focus_for(w);
         }
-        // An override-redirect window: its client's X grab routes the keys.
-        self.wm.overrides.iter().any(|o| o.wl_surface().as_ref() == Some(surface)).then(|| FocusTarget::Surface(surface.clone()))
+        Some(FocusTarget::Surface(surface.clone()))
     }
 }
 
@@ -482,6 +584,7 @@ impl XwmHandler for Lumen {
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if window.is_override_redirect() {
             self.wm.overrides.retain(|o| !same_x11(o, &window));
+            self.check_x11_keyboard_grab();
             self.refresh_pointer_focus();
             self.queue_redraw_all();
             return;
@@ -498,6 +601,7 @@ impl XwmHandler for Lumen {
         if let Some(id) = self.x11_id(&window) {
             self.window_gone(id);
         } else if before != self.wm.overrides.len() {
+            self.check_x11_keyboard_grab();
             self.queue_redraw_all();
         }
     }

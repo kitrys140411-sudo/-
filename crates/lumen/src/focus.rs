@@ -31,16 +31,6 @@ pub enum FocusTarget {
     X11(X11Surface),
 }
 
-impl FocusTarget {
-    /// The X11 window behind this focus, if it is one.
-    pub fn x11(&self) -> Option<&X11Surface> {
-        match self {
-            FocusTarget::X11(x) => Some(x),
-            FocusTarget::Surface(_) => None,
-        }
-    }
-}
-
 impl From<WlSurface> for FocusTarget {
     fn from(s: WlSurface) -> FocusTarget {
         FocusTarget::Surface(s)

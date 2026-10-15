@@ -497,10 +497,13 @@ impl Lumen {
             }
             let logo = self.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo);
             let under = self.wm.window_under(self.pointer_pos);
-            if self.wm.override_under(self.pointer_pos) {
+            if let Some(or) = self.wm.override_at(self.pointer_pos).and_then(|o| o.wl_surface()) {
                 // An X11 menu or tooltip: it belongs to the focused app, which
-                // keeps the focus.
+                // keeps the focus. An unmanaged game the user left takes the
+                // keys back when clicked.
+                self.resume_x11_keyboard_grab(&or);
             } else if let Some(id) = under {
+                self.suspend_x11_keyboard_grab();
                 self.focus_window(Some(id));
                 if logo && (button == BTN_LEFT || button == BTN_RIGHT) {
                     if button == BTN_LEFT {

@@ -592,6 +592,7 @@ impl Lumen {
         if let Some(ws) = self.wm.get(target).map(|w| w.ws) {
             self.switch_workspace(ws);
         }
+        self.suspend_x11_keyboard_grab();
         self.focus_window(Some(target));
         self.shell_set_overview(false);
     }
@@ -684,6 +685,8 @@ impl Lumen {
         let Some(s) = self.shell.switcher.take() else { return };
         let target = s.ids.get(s.index).copied().filter(|id| self.wm.get(*id).is_some());
         let target = target.or(self.wm.focused);
+        // Picked explicitly, even if it is the window that had the focus.
+        self.suspend_x11_keyboard_grab();
         self.focus_window(target);
         self.queue_redraw_all();
     }
@@ -755,6 +758,7 @@ impl Lumen {
                         ids.first().map(|t| t.2)
                     });
                     if let Some(id) = pick {
+                        self.suspend_x11_keyboard_grab();
                         self.focus_window(Some(id));
                     }
                     self.shell_set_overview(false);
@@ -888,6 +892,7 @@ impl Lumen {
             let on_window = slots.iter().find(|(_, r)| r.contains(pos)).map(|(id, _)| *id).filter(|_| !self.shell.apps_mode);
             match (on_window, button) {
                 (Some(id), BTN_LEFT) => {
+                    self.suspend_x11_keyboard_grab();
                     self.focus_window(Some(id));
                     self.shell_set_overview(false);
                 }

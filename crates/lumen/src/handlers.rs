@@ -250,6 +250,9 @@ impl Lumen {
         let previous = self.wm.focused;
         let changed = self.wm.set_focused(id);
         if changed {
+            // Another window got the focus: an X11 keyboard grab (a menu, a
+            // game) no longer holds the keys.
+            self.suspend_x11_keyboard_grab();
             // Popups (menus) of the window losing focus close, and their
             // keyboard grab ends before focus moves on.
             if let Some(old) = previous.and_then(|p| self.wm.get(p)).and_then(|w| w.surface()) {
@@ -273,16 +276,12 @@ impl Lumen {
                 }
             }
         }
-        let target = id.and_then(|id| self.wm.get(id)).and_then(crate::xwayland::focus_for);
+        let target = self.keyboard_target();
         if let Some(kb) = self.seat.get_keyboard() {
-            if self.shell.wants_keyboard() {
-                kb.set_focus(self, None, serial);
-            } else {
-                kb.set_focus(self, target, serial);
-                // Per-window keyboard layouts follow the focus.
-                if let Some(id) = id {
-                    self.restore_window_layout(id);
-                }
+            kb.set_focus(self, target, serial);
+            // Per-window keyboard layouts follow the focus.
+            if let (Some(id), false) = (id, self.shell.wants_keyboard()) {
+                self.restore_window_layout(id);
             }
         }
         if changed {

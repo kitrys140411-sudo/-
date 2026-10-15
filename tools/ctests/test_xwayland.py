@@ -251,8 +251,9 @@ def test_x11_override_redirect_menu(t):
     r, g, b = img.mean(int(px) + 60, int(py) + 40, int(px) + 140, int(py) + 80)
     t.check(r > 180 and g > 140 and b < 140, f"menu color {(r, g, b)}")
     # Pointer input reaches the menu; clicking it keeps the app focused.
+    # (It appeared under the pointer, which may have entered it right then.)
     c.pointer(px + 50, py + 50)
-    cl.wait_line(r"^enter kind=pointer x=50 y=50 surface=popup")
+    cl.wait_line(r"^enter kind=pointer x=(0|50) y=(0|50) surface=popup")
     c.click()
     cl.wait_line(r"^popup event=closed reason=click")
     t.check(c.window("XMenu")["focused"], "clicking the menu must not unfocus its app")
@@ -428,3 +429,69 @@ def test_x11_static_windows_map(t):
     w = c.window("XStatic7")
     r, g, b = img.mean(int(w["x"]) + 50, int(w["y"]) + 50, int(w["x"]) + 250, int(w["y"]) + 150)
     t.check(r > 160 and g < 120 and b < 80, f"static window body {(r, g, b)}")
+
+
+def test_x11_menu_keyboard_grab(t):
+    """GTK 2, Qt and Wine menus grab the keyboard: keys go to the menu while it is open
+    and to the window again as soon as it closes."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XGrabMenu", "--popup", "--grab-menu", "--size", "600x400")
+    c.pointer(w["x"] + 100, w["y"] + 80)
+    c.click(code=BTN_RIGHT)
+    cl.wait_line(r"^popup event=grab status=success")
+    c.wait(lambda: (xinfo(c)["keyboard_grab"] or {}).get("active"), 10, "keyboard grab")
+    c.key("a")
+    cl.wait_line(r"^key code=38 state=pressed surface=popup")
+    # A click in the menu closes it (ungrab, destroy): the next key reaches the window.
+    c.pointer(w["x"] + 150, w["y"] + 120)
+    c.click()
+    cl.wait_line(r"^popup event=closed")
+    c.wait(lambda: xinfo(c)["keyboard_grab"] is None, 10, "grab ended")
+    c.key("b")
+    cl.wait_line(r"^key code=56 state=pressed surface=main")
+    t.check(c.window("XGrabMenu")["focused"], c.window("XGrabMenu"))
+
+
+def test_keys_after_unmanaged_game_exits(t):
+    """An unmanaged fullscreen game held the keyboard: when it exits, the focused window
+    gets the keys again without a click."""
+    c = t.compositor()
+    app, _ = c.map_window("Typing", "--size", "400x300")
+    game = x11_client(c, "--title", "XSdlExit", "--override-fullscreen", name="game")
+    game.wait_line(r"^grab keyboard status=success")
+    c.key("a")
+    game.wait_line(r"^key code=38 state=pressed")
+    game.stop()
+    c.wait(lambda: not xinfo(c)["overrides"] and xinfo(c)["keyboard_grab"] is None, 10, "game and its grab gone")
+    c.key("s")
+    app.wait_line(r"^key sym=s .*state=pressed")
+
+
+def test_unmanaged_game_keyboard_leave_and_return(t):
+    """The user can leave an unmanaged game that holds the keyboard and come back:
+    the overview returns to it, Alt+Tab (even to the window that had the focus) leaves
+    it, and a click on the game gives it the keys again."""
+    c = t.compositor()
+    app, _ = c.map_window("Desk", "--size", "400x300")
+    game = x11_client(c, "--title", "XSdlTab", "--override-fullscreen", name="game")
+    game.wait_line(r"^grab keyboard status=success")
+    c.wait(lambda: (xinfo(c)["keyboard_grab"] or {}).get("active"), 10, "grab")
+    c.key("super")
+    c.wait(lambda: c.shell()["overview"], 10, "overview")
+    c.key("esc")
+    c.wait(lambda: not c.shell()["overview"], 10, "overview closed")
+    c.settle()
+    c.key("a")
+    game.wait_line(r"^key code=38 state=pressed")
+    c.key_down("alt")
+    c.key("tab")
+    c.key_up("alt")
+    c.wait(lambda: not xinfo(c)["keyboard_grab"]["active"], 10, "grab suspended")
+    n = len(game.lines)
+    c.key("s")
+    app.wait_line(r"^key sym=s .*state=pressed")
+    t.check(not [line for line in game.lines[n:] if line.startswith("key code=39")], game.lines[n:])
+    c.click(640, 400)
+    c.wait(lambda: xinfo(c)["keyboard_grab"]["active"], 10, "grab resumed")
+    c.key("d")
+    game.wait_line(r"^key code=40 state=pressed")

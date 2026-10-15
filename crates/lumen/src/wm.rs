@@ -654,9 +654,9 @@ impl Wm {
         None
     }
 
-    /// Whether an override-redirect window (an X11 menu) is under a point.
-    pub fn override_under(&self, p: Point<f64, Logical>) -> bool {
-        self.override_surface_under(p).is_some()
+    /// The override-redirect window (an X11 menu, an unmanaged game) under a point.
+    pub fn override_at(&self, p: Point<f64, Logical>) -> Option<&X11Surface> {
+        self.overrides.iter().rev().find(|x| x.wl_surface().is_some() && x.geometry().to_f64().contains(p))
     }
 
     /// Window (not surface) under a point, by geometry only.
