@@ -44,6 +44,14 @@ struct Controls {
     clicks: u32,
 }
 
+/// An open document of the Editor page.
+struct Doc {
+    /// Identifies the document's editor state while tabs come and go.
+    key: u64,
+    name: String,
+    doc: TextDoc,
+}
+
 struct Gallery {
     page: usize,
     c: Controls,
@@ -51,6 +59,9 @@ struct Gallery {
     list_sel: Selection,
     grid_sel: Selection,
     list_mode: usize,
+    table_sel: Selection,
+    table_sort: SortOrder,
+    table_order: Vec<usize>,
     list_target: Option<usize>,
     deleted: Vec<usize>,
     // Graphs
@@ -66,7 +77,10 @@ struct Gallery {
     chooser: Option<FileChooser>,
     last_choice: String,
     // Editor
-    doc: TextDoc,
+    docs: Vec<Doc>,
+    active_doc: usize,
+    next_doc: u64,
+    closing: Option<usize>,
     find: String,
     wrap: bool,
     numbers: bool,
@@ -77,6 +91,7 @@ struct Gallery {
     output_volume: f32,
     brightness: f32,
     layout: usize,
+    shortcuts: [Option<Shortcut>; 3],
     icon_sel: Selection,
 }
 
@@ -88,6 +103,9 @@ impl Gallery {
             list_sel: Selection::default(),
             grid_sel: Selection::default(),
             list_mode: 0,
+            table_sel: Selection::default(),
+            table_sort: SortOrder::default(),
+            table_order: Vec::new(),
             list_target: None,
             deleted: Vec::new(),
             cpu: Vec::new(),
@@ -100,7 +118,13 @@ impl Gallery {
             rename_text: String::new(),
             chooser: None,
             last_choice: "Nothing chosen yet".into(),
-            doc: TextDoc::new(SAMPLE),
+            docs: vec![
+                Doc { key: 0, name: "main.rs".into(), doc: TextDoc::new(SAMPLE) },
+                Doc { key: 1, name: "notes.md".into(), doc: TextDoc::new(NOTES) },
+            ],
+            active_doc: 0,
+            next_doc: 2,
+            closing: None,
             find: String::new(),
             wrap: true,
             numbers: true,
@@ -110,6 +134,7 @@ impl Gallery {
             output_volume: 65.0,
             brightness: 80.0,
             layout: 0,
+            shortcuts: [Some(Shortcut::new(Mods { logo: true, ..Mods::NONE }, Key::Enter)), Some(Shortcut::key(Key::Other(0xff61))), None],
             icon_sel: Selection::default(),
         }
     }
@@ -415,23 +440,39 @@ impl Gallery {
 
     fn editor(&mut self, ui: &mut Ui) {
         let t = ui.theme().clone();
-        let matches = self.doc.find_all(&self.find, false, 10_000);
         // Ctrl+F finds, Enter and F3 go to the next match, Shift+F3 back.
         let mut focus_find = ui.shortcut(Shortcut::ctrl('f'));
-        if ui.shortcut(Shortcut::key(Key::F(3))) {
-            self.doc.find_next(&self.find, false);
-        }
-        if ui.shortcut(Shortcut::new(Mods::SHIFT, Key::F(3))) {
-            self.doc.find_previous(&self.find, false);
-        }
         Frame::column().fill_width().height(Size::FILL).show(ui, |ui| {
+            // Document tabs; closing one with changes asks first.
+            let tabs: Vec<Tab> = self.docs.iter().map(|d| Tab::new(d.name.clone()).icon(Icon::FileText).modified(d.doc.is_modified())).collect();
+            let r = ui.tab_bar("documents", &mut self.active_doc, &tabs, true);
+            if let Some(i) = r.close {
+                if self.docs[i].doc.is_modified() {
+                    self.closing = Some(i);
+                } else {
+                    self.close_doc(i);
+                }
+            }
+            if r.new_tab {
+                self.docs.push(Doc { key: self.next_doc, name: format!("Untitled {}", self.next_doc), doc: TextDoc::default() });
+                self.next_doc += 1;
+                self.active_doc = self.docs.len() - 1;
+            }
+            let doc = &mut self.docs[self.active_doc];
+            let matches = doc.doc.find_all(&self.find, false, 10_000);
+            if ui.shortcut(Shortcut::key(Key::F(3))) {
+                doc.doc.find_next(&self.find, false);
+            }
+            if ui.shortcut(Shortcut::new(Mods::SHIFT, Key::F(3))) {
+                doc.doc.find_previous(&self.find, false);
+            }
             Frame::row().fill_width().padding((10.0, 16.0)).gap(8.0).show(ui, |ui| {
                 let r = TextInput::new("find", &mut self.find).icon(Icon::Search).placeholder("Find").clear_button().width(Size::Px(260.0)).show(ui);
                 if std::mem::take(&mut focus_find) {
                     ui.request_focus(r.id);
                 }
                 if r.submitted {
-                    self.doc.find_next(&self.find, false);
+                    doc.doc.find_next(&self.find, false);
                 }
                 if !self.find.is_empty() {
                     ui.caption(match matches.len() {
@@ -441,10 +482,10 @@ impl Gallery {
                     });
                 }
                 if Button::icon_only(Icon::ChevronUp).tooltip("Previous Match").enabled(!matches.is_empty()).show(ui).clicked {
-                    self.doc.find_previous(&self.find, false);
+                    doc.doc.find_previous(&self.find, false);
                 }
                 if Button::icon_only(Icon::ChevronDown).tooltip("Next Match").enabled(!matches.is_empty()).show(ui).clicked {
-                    self.doc.find_next(&self.find, false);
+                    doc.doc.find_next(&self.find, false);
                 }
                 ui.spacer();
                 ui.switch("wrap", &mut self.wrap);
@@ -454,18 +495,40 @@ impl Gallery {
                 ui.label("Line Numbers");
             });
             ui.separator();
-            TextEditor::new("editor", &mut self.doc).wrap(self.wrap).line_numbers(self.numbers).highlights(&matches).placeholder("Type something…").show(ui);
+            // Each document keeps its own scroll position and cursor blink.
+            ui.push_id(doc.key, |ui| {
+                TextEditor::new("editor", &mut doc.doc).wrap(self.wrap).line_numbers(self.numbers).highlights(&matches).placeholder("Type something…").show(ui);
+            });
             ui.separator();
             Frame::row().fill_width().padding((6.0, 16.0)).gap(16.0).show(ui, |ui| {
-                let (l, c) = self.doc.cursor_position();
+                let (l, c) = doc.doc.cursor_position();
                 Label::new(format!("Ln {}, Col {}", l + 1, c + 1)).size(t.size_small()).dim().show(ui);
-                Label::new(format!("{} lines", self.doc.line_count())).size(t.size_small()).dim().show(ui);
+                Label::new(format!("{} lines", doc.doc.line_count())).size(t.size_small()).dim().show(ui);
                 ui.spacer();
-                if self.doc.is_modified() {
+                if doc.doc.is_modified() {
                     Label::new("Modified").size(t.size_small()).color(t.accent).show(ui);
                 }
             });
         });
+        let mut open = self.closing.is_some();
+        let name = self.closing.map(|i| self.docs[i].name.clone()).unwrap_or_default();
+        let body = "Your changes will be lost if you close it without saving.";
+        if let Some(yes) = ui.confirm("close-doc", &mut open, &format!("Close “{name}” without saving?"), body, "Close", true) {
+            if let (true, Some(i)) = (yes, self.closing) {
+                self.close_doc(i);
+            }
+            self.closing = None;
+        }
+    }
+
+    /// Close document `i`; the last one is replaced by an empty document.
+    fn close_doc(&mut self, i: usize) {
+        self.docs.remove(i);
+        if self.docs.is_empty() {
+            self.docs.push(Doc { key: self.next_doc, name: format!("Untitled {}", self.next_doc), doc: TextDoc::default() });
+            self.next_doc += 1;
+        }
+        self.active_doc = self.active_doc.min(self.docs.len() - 1);
     }
 
     fn graphs(&mut self, ui: &mut Ui) {
@@ -726,6 +789,12 @@ what changed and goes quiet when nothing moves.
 
 Long lines wrap at the window edge; turn Wrap off to scroll sideways instead. Double-click selects a \
 word, triple-click a line, and Ctrl+F finds text.
+";
+
+const NOTES: &str = "# Notes
+
+- Ctrl+Page Up/Down switches documents, Ctrl+W closes one, Ctrl+T opens a new one.
+- A dot on a tab marks unsaved changes; closing such a tab asks first.
 ";
 
 fn open_chooser() -> FileChooser {

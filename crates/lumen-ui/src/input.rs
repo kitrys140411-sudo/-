@@ -81,7 +81,24 @@ impl Key {
             Key::Insert => "Insert".into(),
             Key::F(n) => format!("F{n}"),
             Key::Menu => "Menu".into(),
-            Key::Other(k) => format!("{k:#x}"),
+            Key::Other(k) => match k {
+                // X keysyms of keys without a variant of their own.
+                0xff61 => "Print".into(),
+                0xff13 => "Pause".into(),
+                0xff14 => "Scroll Lock".into(),
+                0x1008ff11 => "Volume Down".into(),
+                0x1008ff12 => "Mute".into(),
+                0x1008ff13 => "Volume Up".into(),
+                0x1008ff02 => "Brightness Up".into(),
+                0x1008ff03 => "Brightness Down".into(),
+                0x1008ff14 => "Play".into(),
+                0x1008ff15 => "Stop".into(),
+                0x1008ff16 => "Previous".into(),
+                0x1008ff17 => "Next".into(),
+                0x1008ff31 => "Pause Media".into(),
+                0x1008ffb2 => "Mic Mute".into(),
+                k => format!("{k:#x}"),
+            },
         }
     }
 }
