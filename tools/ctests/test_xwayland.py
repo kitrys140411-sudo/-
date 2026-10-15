@@ -410,3 +410,21 @@ def test_x11_unmanaged_fullscreen_game(t):
     # Super still reaches the compositor.
     c.key("super")
     c.wait(lambda: c.shell()["overview"], 10, "overview over the game")
+
+
+def test_x11_static_windows_map(t):
+    """Windows that draw once (message boxes, dialogs waiting for input) appear: Xwayland
+    may commit their only buffer before the X11 window names its surface."""
+    c = t.compositor()
+    for i in range(8):
+        title = f"XStatic{i}"
+        cl = x11_client(c, "--title", title, "--static", "--size", "300x200", "--color", "#c06030", name=title)
+        cl.wait_line(r"^ready")
+        c.wait(lambda: (c.window(title) or {}).get("mapped"), 10, f"{title} shown")
+    c.settle()
+    t.check(c.window("XStatic7")["focused"], c.windows())
+    t.check(sum(d["windows"] for d in c.shell()["dock"] if d["id"] == "lumen.testclient") == 8, c.shell()["dock"])
+    img = c.screenshot("static")
+    w = c.window("XStatic7")
+    r, g, b = img.mean(int(w["x"]) + 50, int(w["y"]) + 50, int(w["x"]) + 250, int(w["y"]) + 150)
+    t.check(r > 160 and g < 120 and b < 80, f"static window body {(r, g, b)}")

@@ -5,7 +5,7 @@
 //!   ready                                     mapped by the window manager and exposed
 //!   configure x=.. y=.. w=.. h=.. synthetic=0|1   synthetic: root coordinates from the WM
 //!   focus in|out surface=main|dialog
-//!   key code=.. state=pressed|released        X keycode (evdev code + 8)
+//!   key code=.. state=pressed|released surface=..   X keycode (evdev code + 8)
 //!   button code=.. state=pressed|released x=.. y=.. root_x=.. root_y=..
 //!   enter kind=pointer x=.. y=.. surface=main|dialog|popup
 //!   popup event=open x=.. y=.. root_x=.. root_y=..   an override-redirect menu at the click
@@ -15,6 +15,7 @@
 //!   look dx=.. dy=..                          --grab-pointer: motion away from the center (then warped back)
 //!   titlebar event=move                       --titlebar: a press on the title strip asked the WM to move
 //!   grab keyboard status=success|...          --override-fullscreen: XGrabKeyboard once shown
+//!   popup event=grab status=success|...       --grab-menu: the menu's XGrabKeyboard
 //!   closed                                    WM_DELETE_WINDOW from the window manager
 //!   exit reason=timeout|key
 
@@ -22,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
+use x11rb::properties::WmSizeHints;
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode,
     GrabStatus, NotifyDetail, PropMode, Rectangle, Window, WindowClass,
@@ -47,6 +49,7 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE_POPUP_MENU,
         _NET_WM_PID,
         _NET_WM_MOVERESIZE,
+        _MOTIF_WM_HINTS,
     }
 }
 
@@ -151,14 +154,14 @@ impl Client {
     /// Open an override-redirect menu at window coordinates (x, y): it is
     /// placed in root coordinates computed by the X server from where it
     /// believes the window is.
-    fn open_popup(&mut self, x: i16, y: i16, color: (u8, u8, u8)) -> Result<(), String> {
+    fn open_popup(&mut self, x: i16, y: i16, color: (u8, u8, u8), grab: bool) -> Result<(), String> {
         let c = &self.conn;
         let t = c.translate_coordinates(self.main, self.root, x, y).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
         let w = c.generate_id().map_err(|e| e.to_string())?;
         let aux = CreateWindowAux::new()
             .override_redirect(1)
             .background_pixel(pixel(color))
-            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::ENTER_WINDOW);
+            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::ENTER_WINDOW | EventMask::KEY_PRESS | EventMask::KEY_RELEASE);
         c.create_window(
             x11rb::COPY_DEPTH_FROM_PARENT,
             w,
@@ -179,6 +182,16 @@ impl Client {
         c.map_window(w).map_err(|e| e.to_string())?;
         self.popup = Some(w);
         emit(&format!("popup event=open x={x} y={y} root_x={} root_y={}", t.dst_x, t.dst_y));
+        if grab {
+            // An override-redirect window is viewable once mapped (no window
+            // manager in between), so the grab can follow right away.
+            let reply = c
+                .grab_keyboard(false, w, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+                .map_err(|e| e.to_string())?
+                .reply()
+                .map_err(|e| e.to_string())?;
+            emit(&format!("popup event=grab status={}", grab_status_name(reply.status)));
+        }
         Ok(())
     }
 
@@ -195,6 +208,11 @@ impl Client {
             .map_err(|e| e.to_string())?;
         emit("titlebar event=move");
         Ok(())
+    }
+
+    /// Let go of the menu's keyboard grab and remove it.
+    fn ungrab_menu(&self) {
+        let _ = self.conn.ungrab_keyboard(x11rb::CURRENT_TIME);
     }
 
     /// The center of the main window, where mouse look keeps the pointer.
@@ -229,8 +247,11 @@ impl Client {
         Ok(())
     }
 
-    fn close_popup(&mut self) {
+    fn close_popup(&mut self, grabbed: bool) {
         if let Some(w) = self.popup.take() {
+            if grabbed {
+                self.ungrab_menu();
+            }
             let _ = self.conn.destroy_window(w);
             emit("popup event=closed reason=click");
         }
@@ -275,12 +296,27 @@ pub fn run(opts: &Options) -> Result<u8, String> {
         grabbed: false,
     };
     c.main = c.create_toplevel(&opts.title, &opts.app_id, size, opts.color, opts.grab_pointer)?;
-    if opts.initial_state == Some(InitialState::Fullscreen) {
+    let a = &c.atoms;
+    let preset: &[u32] = match opts.initial_state {
         // EWMH: a window may ask for states before it is mapped.
-        let a = &c.atoms;
+        Some(InitialState::Fullscreen) => &[a._NET_WM_STATE_FULLSCREEN],
+        Some(InitialState::Maximized) if opts.state_before_map => &[a._NET_WM_STATE_MAXIMIZED_HORZ, a._NET_WM_STATE_MAXIMIZED_VERT],
+        _ => &[],
+    };
+    if !preset.is_empty() {
+        c.conn.change_property32(PropMode::REPLACE, c.main, a._NET_WM_STATE, AtomEnum::ATOM, preset).map_err(|e| e.to_string())?;
+    }
+    if opts.undecorated {
+        // flags = MWM_HINTS_DECORATIONS, decorations = none.
         c.conn
-            .change_property32(PropMode::REPLACE, c.main, a._NET_WM_STATE, AtomEnum::ATOM, &[a._NET_WM_STATE_FULLSCREEN])
+            .change_property32(PropMode::REPLACE, c.main, a._MOTIF_WM_HINTS, a._MOTIF_WM_HINTS, &[2, 0, 0, 0, 0])
             .map_err(|e| e.to_string())?;
+    }
+    if opts.fixed_size {
+        let mut hints = WmSizeHints::new();
+        hints.min_size = Some((i32::from(size.0), i32::from(size.1)));
+        hints.max_size = hints.min_size;
+        hints.set_normal_hints(&c.conn, c.main).map_err(|e| e.to_string())?;
     }
     if opts.override_fullscreen {
         // Unmanaged and covering the screen, as SDL 1.2 and some Wine games
@@ -309,6 +345,9 @@ pub fn run(opts: &Options) -> Result<u8, String> {
         match event {
             Event::MapNotify(e) if e.window == c.main && !mapped_once => {
                 mapped_once = true;
+                if opts.state_before_map {
+                    continue;
+                }
                 let a = &c.atoms;
                 match opts.initial_state {
                     Some(InitialState::Fullscreen) => c.request_states(&[a._NET_WM_STATE_FULLSCREEN])?,
@@ -318,7 +357,9 @@ pub fn run(opts: &Options) -> Result<u8, String> {
             }
             Event::Expose(e) if e.count == 0 => {
                 if e.window == c.main {
-                    c.paint_strip(c.main, c.size.0);
+                    if !opts.static_window {
+                        c.paint_strip(c.main, c.size.0);
+                    }
                     if !c.ready {
                         c.ready = true;
                         emit("ready");
@@ -357,13 +398,13 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                 emit(&format!("focus out surface={}", c.surface_name(e.event)));
             }
             Event::KeyPress(e) => {
-                emit(&format!("key code={} state=pressed", e.detail));
+                emit(&format!("key code={} state=pressed surface={}", e.detail, c.surface_name(e.event)));
                 if opts.close_on_key && e.detail == KEYCODE_ESCAPE {
                     emit("exit reason=key");
                     return Ok(0);
                 }
             }
-            Event::KeyRelease(e) => emit(&format!("key code={} state=released", e.detail)),
+            Event::KeyRelease(e) => emit(&format!("key code={} state=released surface={}", e.detail, c.surface_name(e.event))),
             Event::ButtonPress(e) => {
                 emit(&format!(
                     "button code={} state=pressed x={} y={} root_x={} root_y={} surface={}",
@@ -382,10 +423,10 @@ pub fn run(opts: &Options) -> Result<u8, String> {
                 }
                 if opts.popup {
                     if c.popup.is_some() {
-                        c.close_popup();
+                        c.close_popup(opts.grab_menu);
                     } else if e.detail == 3 && e.event == c.main {
                         let color = (0xe0, 0xaf, 0x68);
-                        c.open_popup(e.event_x, e.event_y, color)?;
+                        c.open_popup(e.event_x, e.event_y, color, opts.grab_menu)?;
                     }
                 }
             }

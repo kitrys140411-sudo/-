@@ -405,7 +405,20 @@ impl XWaylandShellHandler for Lumen {
         &mut self.xwayland.shell
     }
 
-    fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, _window: X11Surface) {
+    /// Xwayland may commit a window's first buffer before the X11 window
+    /// names its surface (the WL_SURFACE_SERIAL message arrives later): that
+    /// commit found no window to map. A window that draws only once (message
+    /// boxes, dialogs waiting for input) is mapped here instead.
+    fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, window: X11Surface) {
+        if let Some(id) = self.wm.find_x11(&window) {
+            if let Some(w) = self.wm.get(id) {
+                w.window.on_commit();
+            }
+            self.on_x11_commit(id);
+        } else {
+            // A menu or tooltip got its surface: it may be under the pointer.
+            self.refresh_pointer_focus();
+        }
         self.queue_redraw_all();
     }
 }

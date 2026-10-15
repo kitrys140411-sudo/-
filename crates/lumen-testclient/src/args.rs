@@ -98,6 +98,19 @@ pub struct Options {
     pub titlebar: bool,
     /// X11: an override-redirect window covering the screen that grabs the keyboard.
     pub override_fullscreen: bool,
+    /// X11: never draw (the window shows its background only), like a
+    /// message box that draws once: Xwayland commits a single buffer.
+    pub static_window: bool,
+    /// X11: the --popup menu grabs the keyboard (XGrabKeyboard), as GTK 2,
+    /// Qt and Wine menus do; closing it ungrabs.
+    pub grab_menu: bool,
+    /// X11: no window-manager decorations (_MOTIF_WM_HINTS), like games and splash screens.
+    pub undecorated: bool,
+    /// X11: WM_NORMAL_HINTS with the minimum and maximum size equal to --size.
+    pub fixed_size: bool,
+    /// X11: --maximize/--fullscreen only set _NET_WM_STATE before mapping
+    /// (no client message afterwards), as toolkits restoring a saved state do.
+    pub state_before_map: bool,
 }
 
 impl Default for Options {
@@ -129,6 +142,11 @@ impl Default for Options {
             primary: false,
             titlebar: false,
             override_fullscreen: false,
+            static_window: false,
+            grab_menu: false,
+            undecorated: false,
+            fixed_size: false,
+            state_before_map: false,
         }
     }
 }
@@ -178,6 +196,12 @@ usage: lumen-testclient [OPTIONS]
                          window manager (_NET_WM_MOVERESIZE), like Steam's own title bar
   --override-fullscreen  with --x11: an unmanaged (override-redirect) window covering the
                          screen that grabs the keyboard, as SDL 1.2 games go fullscreen
+  --static               with --x11: never draw (one buffer, like a message box)
+  --grab-menu            with --x11 --popup: the menu grabs the keyboard while open
+  --undecorated          with --x11: no window-manager decorations (_MOTIF_WM_HINTS)
+  --fixed-size           with --x11: minimum and maximum size (WM_NORMAL_HINTS) = --size
+  --state-before-map     with --x11: --maximize/--fullscreen only as _NET_WM_STATE set before
+                         mapping, no client message
   -h, --help             show this help
 
 Events are printed to stdout, one line each, as space-separated key=value tokens.";
@@ -265,7 +289,8 @@ where
             }
             "--x11" | "--dialog" | "--lock-pointer" | "--confine-pointer" | "--relative" | "--idle-inhibit"
             | "--inhibit-shortcuts" | "--opaque" | "--grab-pointer" | "--primary"
-            | "--titlebar" | "--override-fullscreen" => {
+            | "--titlebar" | "--override-fullscreen" | "--static" | "--grab-menu" | "--undecorated" | "--fixed-size"
+            | "--state-before-map" => {
                 takes_no_value(&flag)?;
                 match flag.as_str() {
                     "--x11" => opts.x11 = true,
@@ -279,6 +304,11 @@ where
                     "--primary" => opts.primary = true,
                     "--titlebar" => opts.titlebar = true,
                     "--override-fullscreen" => opts.override_fullscreen = true,
+                    "--static" => opts.static_window = true,
+                    "--grab-menu" => opts.grab_menu = true,
+                    "--undecorated" => opts.undecorated = true,
+                    "--fixed-size" => opts.fixed_size = true,
+                    "--state-before-map" => opts.state_before_map = true,
                     _ => opts.inhibit_shortcuts = true,
                 }
             }
@@ -299,6 +329,19 @@ where
     }
     if opts.override_fullscreen && !opts.x11 {
         return Err("--override-fullscreen needs --x11".into());
+    }
+    let x11_only = [
+        (opts.static_window, "--static"),
+        (opts.grab_menu, "--grab-menu"),
+        (opts.undecorated, "--undecorated"),
+        (opts.fixed_size, "--fixed-size"),
+        (opts.state_before_map, "--state-before-map"),
+    ];
+    if let Some((_, name)) = x11_only.iter().find(|(on, _)| *on && !opts.x11) {
+        return Err(format!("{name} needs --x11"));
+    }
+    if opts.grab_menu && !opts.popup {
+        return Err("--grab-menu needs --popup".into());
     }
     Ok(Command::Run(opts))
 }
@@ -423,6 +466,11 @@ mod tests {
         assert!(run(&["--override-fullscreen"]).is_err());
         assert!(run(&["--x11", "--override-fullscreen"]).unwrap().override_fullscreen);
         assert!(run(&["--x11=1"]).is_err());
+        let o = run(&["--x11", "--static", "--undecorated", "--fixed-size", "--state-before-map"]).unwrap();
+        assert!(o.static_window && o.undecorated && o.fixed_size && o.state_before_map);
+        assert!(run(&["--static"]).is_err());
+        assert!(run(&["--x11", "--grab-menu"]).is_err());
+        assert!(run(&["--x11", "--popup", "--grab-menu"]).unwrap().grab_menu);
     }
 
     #[test]

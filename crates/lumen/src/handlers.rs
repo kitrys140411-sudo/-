@@ -136,7 +136,7 @@ impl Lumen {
     /// An X11 window's surface committed: it is shown with its first buffer.
     /// (Its size is the X geometry we configured, not the buffer's, so there
     /// is nothing to re-place on later commits.)
-    fn on_x11_commit(&mut self, id: u32) {
+    pub(crate) fn on_x11_commit(&mut self, id: u32) {
         let Some(w) = self.wm.get(id) else { return };
         let Some(surface) = w.surface() else { return };
         let has_buffer = with_renderer_surface_state(&surface, |s| s.buffer().is_some()).unwrap_or(false);
