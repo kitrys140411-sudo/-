@@ -99,6 +99,8 @@ pub struct XwaylandState {
     pub wl_selection: [Option<Vec<String>>; 2],
     /// An X client's keyboard grab the compositor honours (see [`X11KeyboardGrab`]).
     pub keyboard_grab: Option<X11KeyboardGrab>,
+    /// Asks [`initial_states`] for the _NET_WM_STATE of windows being mapped.
+    state_reader: Option<std::sync::mpsc::Sender<u32>>,
 }
 
 /// An X client grabbed the keyboard (XGrabKeyboard) on an override-redirect
@@ -150,6 +152,7 @@ impl XwaylandState {
             error: None,
             wl_selection: [None, None],
             keyboard_grab: None,
+            state_reader: None,
         }
     }
 
@@ -325,6 +328,7 @@ impl Lumen {
                 }
             }
         }
+        self.xwayland.state_reader = initial_states(display, &self.lh);
         let x = &mut self.xwayland;
         x.wm = Some(wm);
         x.ready = true;
@@ -397,6 +401,7 @@ impl Lumen {
         }
         x.ready = false;
         x.ready_at = None;
+        x.state_reader = None;
         x.display = None;
         x.pid = None;
         x.client = None;
@@ -546,6 +551,23 @@ impl Lumen {
         parent.or(focused).or_else(any).map(|w| w.ws).unwrap_or(self.wm.current)
     }
 
+    /// The _NET_WM_STATE a window had when it asked to be mapped: an app
+    /// restoring its maximized or fullscreen state that does not repeat the
+    /// request once mapped (GTK, Chromium, Electron) gets it now, unless the
+    /// window was given another layout meanwhile.
+    fn apply_initial_x11_state(&mut self, window: u32, maximized: bool, fullscreen: bool) {
+        let Some(w) = self.wm.windows.iter().find(|w| w.x11().is_some_and(|x| x.window_id() == window)) else { return };
+        if !matches!(w.layout, Layout::Floating) || !(maximized || fullscreen) || self.wm.grab.as_ref().is_some_and(|g| g.win == w.id) {
+            return;
+        }
+        let id = w.id;
+        let (work, out) = (self.work_area(), self.output_rect());
+        let layout = if fullscreen { Layout::Fullscreen { restore: work } } else { Layout::Maximized { restore: work } };
+        tracing::debug!(id, maximized, fullscreen, "X11 window asked for a state before mapping");
+        self.wm.set_layout(id, layout, work, out);
+        self.queue_redraw_all();
+    }
+
     /// The X11 window of a managed window id.
     fn x11_id(&self, window: &X11Surface) -> Option<u32> {
         self.wm.find_x11(window)
@@ -662,6 +684,11 @@ impl XwmHandler for Lumen {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        // Before anything of ours changes _NET_WM_STATE (focus does, when
+        // the window shows its first buffer).
+        if let Some(reader) = &self.xwayland.state_reader {
+            let _ = reader.send(window.window_id());
+        }
         if let Err(e) = window.set_mapped(true) {
             tracing::warn!("cannot map X11 window: {e}");
             return;
@@ -871,6 +898,51 @@ impl XwmHandler for Lumen {
     fn disconnected(&mut self, _xwm: XwmId) {
         self.xwayland_lost("Xwayland connection lost");
     }
+}
+
+/// smithay's window manager does not read the _NET_WM_STATE property a
+/// client sets before mapping its window (EWMH allows that instead of the
+/// client message), and its connection is private. A thread with a
+/// connection of its own reads it, so the compositor never waits for the X
+/// server (which may itself be waiting for the compositor). Replies arrive
+/// on the event loop; the thread ends with the X server or when Xwayland is
+/// replaced (the sender is dropped).
+fn initial_states(display: u32, lh: &smithay::reexports::calloop::LoopHandle<'static, Lumen>) -> Option<std::sync::mpsc::Sender<u32>> {
+    use smithay::reexports::calloop::channel::{channel, Event};
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let (reply_tx, reply_rx) = channel::<(u32, bool, bool)>();
+    lh.insert_source(reply_rx, |event, _, state| {
+        if let Event::Msg((window, maximized, fullscreen)) = event {
+            state.apply_initial_x11_state(window, maximized, fullscreen);
+        }
+    })
+    .ok()?;
+    let (tx, rx) = std::sync::mpsc::channel::<u32>();
+    let spawned = std::thread::Builder::new().name("x11-states".into()).spawn(move || {
+        let Ok((conn, _)) = x11rb::connect(Some(&format!(":{display}"))) else { return };
+        let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).ok()?.reply().ok().map(|r| r.atom);
+        let (Some(state), Some(full), Some(max_h), Some(max_v)) = (
+            atom("_NET_WM_STATE"),
+            atom("_NET_WM_STATE_FULLSCREEN"),
+            atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+            atom("_NET_WM_STATE_MAXIMIZED_VERT"),
+        ) else {
+            return;
+        };
+        for window in rx {
+            let Ok(cookie) = conn.get_property(false, window, state, AtomEnum::ATOM, 0, 32) else { return };
+            // A window destroyed meanwhile gives an error reply: skip it.
+            let Ok(reply) = cookie.reply() else { continue };
+            let atoms: Vec<u32> = reply.value32().map(|v| v.collect()).unwrap_or_default();
+            let maximized = atoms.contains(&max_h) && atoms.contains(&max_v);
+            if reply_tx.send((window, maximized, atoms.contains(&full))).is_err() {
+                return;
+            }
+        }
+        let _ = conn.flush();
+    });
+    spawned.ok().map(|_| tx)
 }
 
 /// Games that predate _NET_WM_STATE_FULLSCREEN go fullscreen with an

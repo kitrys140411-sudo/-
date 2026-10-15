@@ -662,3 +662,21 @@ def test_x11_menu_stays_on_its_workspace(t):
     img = c.screenshot("ws1")
     r, g, b = img.mean(int(px) + 60, int(py) + 40, int(px) + 140, int(py) + 80)
     t.check(r > 180 and g > 140 and b < 140, f"menu not back on workspace 1: {(r, g, b)}")
+
+
+def test_x11_state_set_before_mapping(t):
+    """Apps restoring a maximized or fullscreen window may only set _NET_WM_STATE before
+    mapping it (allowed by EWMH, done by GTK, Chromium and Electron)."""
+    c = t.compositor()
+    cl, w = map_x11(c, "XPreMax", "--state-before-map", "--maximize", "--size", "500x300")
+    c.wait(lambda: c.window("XPreMax")["layout"] == "maximized", 10, "maximized")
+    c.settle()
+    w = c.window("XPreMax")
+    t.check((w["x"], w["y"], w["w"], w["h"]) == (0, 32, 1280, 768), w)
+    state = x11_run(c, "xprop", "-name", "XPreMax", "_NET_WM_STATE").stdout
+    t.check("_NET_WM_STATE_MAXIMIZED_HORZ" in state, state)
+    f, wf = map_x11(c, "XPreFull", "--state-before-map", "--fullscreen", "--size", "800x600")
+    c.wait(lambda: c.window("XPreFull")["layout"] == "fullscreen", 10, "fullscreen")
+    c.settle()
+    wf = c.window("XPreFull")
+    t.check((wf["x"], wf["y"], wf["w"], wf["h"]) == (0, 0, 1280, 800), wf)
