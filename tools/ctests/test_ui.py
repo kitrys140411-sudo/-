@@ -5,7 +5,7 @@ screenshots of every state worth looking at."""
 import os
 import time
 
-from headless import BTN_RIGHT, UiApp
+from headless import BTN_MIDDLE, BTN_RIGHT, UiApp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROFILE = os.environ.get("LUMEN_PROFILE", "release")
@@ -291,6 +291,106 @@ def test_text_editor(t):
     g.wait_log(r"^edit editor 12:7 Notes:$", k)
     g.settle()
     c.screenshot("editor-nowrap")
+
+
+def test_editor_document_tabs(t):
+    c, g = start(t, "--page", "editor")
+    m = g.mark()
+    g.widget("main.rs", "tab")
+    t.check(g.find("main.rs", "tab")["value"] == "on", "the first document is active")
+    # Ctrl+T opens a new document, Ctrl+Page Up goes back to the one before.
+    g.click("editor", "editor")
+    c.key("ctrl", "t")
+    g.wait_log(r"^tab-new documents$", m)
+    g.widget("Untitled 2", "tab")
+    c.wait(lambda: g.find("Untitled 2", "tab")["value"] == "on", 10, "the new document is active")
+    c.key("ctrl", "pageup")
+    g.wait_log(r"^tab-select documents notes.md$", m)
+    # Typing marks the document modified; closing it asks first.
+    g.click("editor", "editor")
+    c.type("draft")
+    c.wait(lambda: g.find("notes.md", "tab")["value"] == "on modified", 10, "modified mark")
+    g.settle()
+    c.screenshot("editor-tabs")
+    g.click("close notes.md", "button")
+    g.wait_log(r"^tab-close documents notes.md$", m)
+    g.widget("Close “notes.md” without saving?", "dialog")
+    g.settle()
+    c.screenshot("editor-close-modified")
+    g.click("Close")
+    g.wait_gone("notes.md", "tab")
+    # An unmodified document closes right away (middle click works too).
+    g.click("Untitled 2", "tab", button=BTN_MIDDLE)
+    g.wait_log(r"^tab-close documents Untitled 2$", m)
+    g.wait_gone("Untitled 2", "tab")
+    t.check([w["label"] for w in g.widgets("tab")] == ["main.rs"], f"tabs left: {[w['label'] for w in g.widgets('tab')]}")
+
+
+def test_table_sorting(t):
+    c, g = start(t, "--page", "lists")
+    m = g.mark()
+    g.click("Table", "tab")
+    g.widget("lumen-term")
+
+    def cpu_column():
+        rows = [w for w in g.widgets("label") if w["label"].endswith("%") and w["label"][:-1].replace(".", "").isdigit()]
+        return [float(w["label"][:-1]) for w in sorted(rows, key=lambda w: w["y"])]
+
+    # The first click sorts ascending, the second reverses.
+    g.click("CPU", "frame")
+    g.wait_log(r"^sort CPU ascending$", m)
+    c.wait(lambda: cpu_column() == sorted(cpu_column()) and len(cpu_column()) > 5, 10, "ascending CPU column")
+    g.click("CPU", "frame")
+    g.wait_log(r"^sort CPU descending$", m)
+    c.wait(lambda: cpu_column() == sorted(cpu_column(), reverse=True) and len(cpu_column()) > 5, 10, "descending CPU column")
+    # The selection follows the process to its new row (the gallery's
+    # made-up CPU numbers, sorted the same stable way).
+    def cpu(i):
+        return ((i * 2654435761) % 2**32 >> 8) % 1000 / 10
+    o2 = sorted(sorted(range(240), key=cpu), key=cpu, reverse=True)
+    expect = sorted(o2, key=cpu).index(o2[0])
+    g.click("item-0", "item")
+    g.wait_log(r"^selection 0$", m)
+    k = g.mark()
+    g.click("CPU", "frame")
+    g.wait_log(r"^sort CPU ascending$", k)
+    c.wait(lambda: g.widgets("list")[0]["value"] == str(expect), 10, f"selection moved to row {expect}")
+    g.settle()
+    c.screenshot("table")
+
+
+def test_shortcut_recording(t):
+    c, g = start(t, "--page", "settings")
+    m = g.mark()
+    g.scroll("Office 5G", 600)
+    c.wait(lambda: g.find("Lock Screen", "shortcut") and g.find("Lock Screen", "shortcut")["y"] + 40 < g.map()["size"][1], 10, "field in view")
+    g.settle()
+    t.check(g.widget("Open Terminal", "shortcut")["value"] == "Super+Enter", "the default shortcut")
+    # Activating the field records the next combination; plain letters are
+    # typing, not shortcuts, so they are ignored.
+    g.click("Lock Screen", "shortcut")
+    c.wait(lambda: g.find("Lock Screen", "shortcut")["value"] == "recording", 10, "recording")
+    g.settle()
+    c.screenshot("shortcut-recording")
+    c.key("l")
+    c.key("ctrl", "shift", "l")
+    g.wait_log(r"^shortcut Lock Screen Ctrl\+Shift\+L$", m)
+    c.wait(lambda: g.find("Lock Screen", "shortcut")["value"] == "Ctrl+Shift+L", 10, "the recorded shortcut shown")
+    # While recording, app shortcuts do not fire (Ctrl+2 would switch pages);
+    # Backspace disables the shortcut.
+    g.click("Open Terminal", "shortcut")
+    c.wait(lambda: g.find("Open Terminal", "shortcut")["value"] == "recording", 10, "recording")
+    c.key("ctrl", "2")
+    g.wait_log(r"^shortcut Open Terminal Ctrl\+2$", m)
+    t.check(title(g) == "Gallery — Settings", f"Ctrl+2 was recorded, not acted on: {title(g)!r}")
+    g.click("Open Terminal", "shortcut")
+    c.key("backspace")
+    g.wait_log(r"^shortcut Open Terminal disabled$", m)
+    g.click("Take Screenshot", "shortcut")
+    c.key("esc")
+    c.wait(lambda: g.find("Take Screenshot", "shortcut")["value"] == "Print", 10, "Escape keeps the old shortcut")
+    g.settle()
+    c.screenshot("shortcuts")
 
 
 def test_settings_rows_and_icons(t):

@@ -339,8 +339,12 @@ impl Gallery {
             Frame::row().fill_width().gap(12.0).show(ui, |ui| {
                 ui.title_text("Lists");
                 ui.spacer();
-                ui.tabs("list mode", &mut self.list_mode, &["List", "Grid"]);
+                ui.tabs("list mode", &mut self.list_mode, &["List", "Grid", "Table"]);
             });
+            if self.list_mode == 2 {
+                self.table(ui);
+                return;
+            }
             let sel = if self.list_mode == 0 { &mut self.list_sel } else { &mut self.grid_sel };
             Label::new(format!(
                 "{COUNT} items, only the visible ones are built. Click, Ctrl+click, Shift+click or drag on empty space to select; arrows, Page Up/Down and Ctrl+A work too. {} selected.",
@@ -408,6 +412,50 @@ impl Gallery {
         if ui.toast_action("Undo") {
             self.deleted.pop();
         }
+    }
+
+    /// A process table: column headers sort the rows (a second click
+    /// reverses), the selection follows the rows when they move.
+    fn table(&mut self, ui: &mut Ui) {
+        const PROCS: usize = 240;
+        let t = ui.theme().clone();
+        if self.table_order.len() != PROCS {
+            self.table_order = (0..PROCS).collect();
+        }
+        let cols = [Column::new("Name", Size::FILL), Column::new("PID", Size::Px(64.0)).end(), Column::new("CPU", Size::Px(64.0)).end(), Column::new("Memory", Size::Px(88.0)).end()];
+        Label::new(format!("{PROCS} processes. Click a column title to sort by it, again to reverse the order.")).size(t.size_small()).dim().wrap().fill_width().show(ui);
+        Frame::column().fill_width().height(Size::FILL).gap(0.0).background(t.input_bg).radius(t.radius_large).clip().show(ui, |ui| {
+            // Rows start with a 16 px icon.
+            if ColumnHeaders::new("procs", &cols).leading(16.0 + 12.0).show(ui, &mut self.table_sort) {
+                let selected: Vec<usize> = self.table_sel.selected().map(|i| self.table_order[i]).collect();
+                let sort = self.table_sort;
+                self.table_order.sort_by(|&a, &b| {
+                    let (pa, pb) = (process(a), process(b));
+                    sort.apply(match sort.column {
+                        0 => pa.0.cmp(&pb.0).then(a.cmp(&b)),
+                        1 => pa.1.cmp(&pb.1),
+                        2 => pa.2.total_cmp(&pb.2),
+                        _ => pa.3.cmp(&pb.3),
+                    })
+                });
+                // Keep the same processes selected at their new rows.
+                self.table_sel.clear();
+                for p in selected {
+                    if let Some(row) = self.table_order.iter().position(|&q| q == p) {
+                        self.table_sel.toggle(row);
+                    }
+                }
+            }
+            let order = &self.table_order;
+            ListView::new("procs", PROCS, 32.0).show(ui, &mut self.table_sel, |ui, item| {
+                let (name, pid, cpu, mem) = process(order[item.index]);
+                ui.icon_colored(Icon::Cpu, 16.0, t.text_dim);
+                Label::new(name).width(cols[0].width).show(ui);
+                Label::new(pid.to_string()).dim().width(cols[1].width).align(TextAlign::End).show(ui);
+                Label::new(format!("{cpu:.1}%")).width(cols[2].width).align(TextAlign::End).show(ui);
+                Label::new(format!("{:.1} MB", mem as f32 / 10.0)).dim().width(cols[3].width).align(TextAlign::End).show(ui);
+            });
+        });
     }
 
     fn text(&mut self, ui: &mut Ui) {
@@ -702,7 +750,7 @@ impl Gallery {
     fn settings(&mut self, ui: &mut Ui) {
         let t = ui.theme().clone();
         let (wifi, bluetooth, airplane) = (&mut self.wifi, &mut self.bluetooth, &mut self.airplane);
-        let (volume, brightness, layout) = (&mut self.output_volume, &mut self.brightness, &mut self.layout);
+        let (volume, brightness, layout, shortcuts) = (&mut self.output_volume, &mut self.brightness, &mut self.layout, &mut self.shortcuts);
         page(ui, "Settings", "The building blocks of settings pages: groups of rows with switches, values and actions.", |ui| {
             ui.group("Wireless", |ui| {
                 ui.switch_row("Wi-Fi", Some(if *wifi { "Connected to Home" } else { "Off" }), wifi);
@@ -746,6 +794,15 @@ impl Gallery {
                     ui.dropdown("keyboard layout", layout, &["English (US)", "Russian"]);
                 });
             });
+            ui.group("Keyboard Shortcuts", |ui| {
+                for (i, (name, sub)) in [("Open Terminal", "Starts a new terminal window"), ("Take Screenshot", "Saves the whole screen"), ("Lock Screen", "")].into_iter().enumerate() {
+                    let row = ListRow::new(name);
+                    let row = if sub.is_empty() { row } else { row.subtitle(sub) };
+                    row.show(ui, |ui| {
+                        ui.shortcut_input(name, &mut shortcuts[i]);
+                    });
+                }
+            });
             ui.group("", |ui| {
                 ListRow::new("About This Computer").icon(Icon::Info).activatable().show(ui, |_| {});
             });
@@ -764,6 +821,15 @@ impl Gallery {
             });
         });
     }
+}
+
+/// The Table view's made-up process `i`: name, PID, CPU percent and
+/// memory in tenths of a megabyte.
+fn process(i: usize) -> (String, u32, f32, u32) {
+    const NAMES: [&str; 12] = ["lumen", "lumen-term", "lsh", "firefox", "pipewire", "wireplumber", "iwd", "bluetoothd", "Xwayland", "steam", "files", "editor"];
+    let h = (i as u32).wrapping_mul(2_654_435_761);
+    let name = if i < NAMES.len() { NAMES[i].to_string() } else { format!("{} #{}", NAMES[i % NAMES.len()], i / NAMES.len()) };
+    (name, 1 + (h >> 20) % 30_000, ((h >> 8) % 1000) as f32 / 10.0, 40 + (h >> 4) % 40_000)
 }
 
 fn legend(ui: &mut Ui, color: Color, text: &str) {
