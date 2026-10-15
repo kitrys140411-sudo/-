@@ -495,3 +495,43 @@ def test_unmanaged_game_keyboard_leave_and_return(t):
     c.wait(lambda: xinfo(c)["keyboard_grab"]["active"], 10, "grab resumed")
     c.key("d")
     game.wait_line(r"^key code=40 state=pressed")
+
+
+def cpu_seconds(pid):
+    """User + system CPU time of a process (clock ticks are 100 per second on Linux)."""
+    fields = open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / 100.0
+
+
+def test_xwayland_failing_at_startup(t):
+    """An Xwayland that exits before it is ready (a broken driver, a missing library) is
+    noticed at once, retried 3 times and then reported; the compositor stays idle and
+    stops passing DISPLAY on."""
+    fake = os.path.join(t.dir, "fakebin")
+    os.makedirs(fake, exist_ok=True)
+    with open(os.path.join(fake, "Xwayland"), "w") as f:
+        f.write("#!/bin/sh\necho 'fake Xwayland: failing' >&2\nexit 1\n")
+    os.chmod(os.path.join(fake, "Xwayland"), 0o755)
+    c = t.compositor(env={"PATH": fake + ":" + os.environ["PATH"]})
+    c.wait(lambda: xinfo(c)["failures"] == 4, 20, "three restarts")
+    x = xinfo(c)
+    t.check(not x["ready"] and x["display"] is None and "startup" in (x["error"] or ""), x)
+    before = cpu_seconds(c.proc.pid)
+    time.sleep(2)
+    used = cpu_seconds(c.proc.pid) - before
+    t.check(used < 0.5, f"compositor busy after Xwayland failed: {used:.2f} s CPU in 2 s")
+    t.check(xinfo(c)["failures"] == 4, "no restarts after giving up")
+    c.wait(lambda: any(n["title"] == "X11 apps unavailable" for n in c.shell()["notifications"]), 10, "notification")
+
+
+def test_xwayland_restarts_after_crash(t):
+    """A crashing Xwayland is replaced: its windows go, a new server comes up and X11
+    apps work again."""
+    c = t.compositor()
+    cl, _ = map_x11(c, "XBefore")
+    pid = xinfo(c)["pid"]
+    os.kill(pid, 9)
+    c.wait(lambda: c.window("XBefore") is None, 10, "windows of the dead server gone")
+    c.wait(lambda: xinfo(c)["ready"] and xinfo(c)["pid"] not in (None, pid), 20, "new Xwayland")
+    t.check(xinfo(c)["failures"] == 1, xinfo(c))
+    map_x11(c, "XAfter")

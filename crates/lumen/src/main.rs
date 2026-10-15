@@ -199,6 +199,7 @@ fn run(args: Args, sigfd: OwnedFd) -> Result<(), String> {
         .run(None, &mut state, |state| {
             state.popups.cleanup();
             state.check_x11_keyboard_grab();
+            state.check_xwayland_startup();
             let _ = state.dh.flush_clients();
         })
         .map_err(|e| format!("event loop: {e}"))?;

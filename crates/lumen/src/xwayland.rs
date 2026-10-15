@@ -9,6 +9,11 @@
 //! control socket reports it), and deferring it past the first frame keeps
 //! it off the boot path. `LUMEN_XWAYLAND=0` turns it off.
 //!
+//! Failures: an Xwayland that exits or hangs while starting, or crashes
+//! later, is restarted a second later, up to 3 times in a row (a crash after
+//! a minute of running starts the count afresh); then X11 apps are reported
+//! unavailable. DISPLAY is passed on from the spawn until a failure.
+//!
 //! Window management: managed X11 windows become [`crate::wm::Win`]s like
 //! xdg toplevels (placement, focus, stacking, move/resize, maximize and
 //! fullscreen through _NET_WM_STATE, close through WM_DELETE_WINDOW). The X
@@ -57,8 +62,13 @@ use crate::focus::FocusTarget;
 use crate::state::Lumen;
 use crate::wm::{same_x11, Layout};
 
-/// Give up restarting a crashing Xwayland after this many failures.
-const MAX_FAILURES: u32 = 3;
+/// Restart a crashing Xwayland up to this many times in a row.
+const MAX_RESTARTS: u32 = 3;
+/// A crash after Xwayland ran this long starts counting afresh.
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+/// An Xwayland that is not ready by then is killed and counts as a failure
+/// (software rendering under emulation can take seconds to start).
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct XwaylandState {
     /// The xwayland_shell_v1 global (only Xwayland can bind it).
@@ -77,6 +87,9 @@ pub struct XwaylandState {
     /// Time from spawning to the window manager being attached.
     pub ready_after: Option<Duration>,
     pub pid: Option<i32>,
+    /// When the window manager attached (crashes long after do not add up).
+    ready_at: Option<Instant>,
+    /// Failures in a row; Xwayland is restarted up to [`MAX_RESTARTS`] times.
     pub failures: u32,
     pub enabled: bool,
     pub error: Option<String>,
@@ -131,6 +144,7 @@ impl XwaylandState {
             spawned: None,
             ready_after: None,
             pid: None,
+            ready_at: None,
             failures: 0,
             enabled,
             error: None,
@@ -139,7 +153,9 @@ impl XwaylandState {
         }
     }
 
-    /// `DISPLAY` for X clients started by the compositor.
+    /// `DISPLAY` for X clients started by the compositor: from the spawn on
+    /// (clients that connect early wait until the server is up) until
+    /// Xwayland fails.
     pub fn display_env(&self) -> Option<String> {
         self.display.map(|d| format!(":{d}"))
     }
@@ -160,18 +176,28 @@ impl XwaylandState {
     }
 }
 
-/// The newest child process of the compositor named Xwayland (smithay keeps
-/// the child handle to itself).
+/// The command name and the fields after it of /proc/PID/stat ("pid (comm)
+/// state ppid ... starttime(22nd field) ..."; comm may contain spaces).
+fn proc_stat(pid: i32) -> Option<(String, Vec<String>)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (comm, rest) = stat.split_once(" (").and_then(|(_, r)| r.rsplit_once(") "))?;
+    Some((comm.to_string(), rest.split_whitespace().map(String::from).collect()))
+}
+
+/// Whether a process exists and has not exited (a zombie has).
+fn process_alive(pid: i32) -> bool {
+    proc_stat(pid).is_some_and(|(_, f)| !matches!(f.first().map(String::as_str), Some("Z" | "X")))
+}
+
+/// The newest live child process of the compositor named Xwayland (smithay
+/// keeps the child handle to itself). None until the child has exec'd.
 fn xwayland_child_pid() -> Option<i32> {
     let me = std::process::id().to_string();
     let mut best: Option<(u64, i32)> = None;
     for entry in std::fs::read_dir("/proc").ok()?.flatten() {
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
-        // "pid (comm) state ppid ... starttime(22nd field) ..."; comm may contain spaces.
-        let Some((comm, rest)) = stat.split_once(" (").and_then(|(_, r)| r.rsplit_once(") ")) else { continue };
-        let fields: Vec<&str> = rest.split_whitespace().collect();
-        if comm != "Xwayland" || fields.get(1) != Some(&me.as_str()) {
+        let Some((comm, fields)) = proc_stat(pid) else { continue };
+        if comm != "Xwayland" || fields.get(1) != Some(&me) || matches!(fields[0].as_str(), "Z" | "X") {
             continue;
         }
         let start = fields.get(19).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
@@ -219,7 +245,7 @@ impl Lumen {
     /// Spawn Xwayland (if enabled and installed). Called after the first frame.
     pub fn start_xwayland(&mut self) {
         let x = &mut self.xwayland;
-        if !x.enabled || x.client.is_some() || x.failures >= MAX_FAILURES {
+        if !x.enabled || x.client.is_some() || x.failures > MAX_RESTARTS {
             return;
         }
         ensure_x11_socket_dir();
@@ -257,9 +283,18 @@ impl Lumen {
                 x.client = Some(client);
                 x.display = Some(display);
                 x.pid = pid;
-                x.spawned = Some(Instant::now());
+                let spawned = Instant::now();
+                x.spawned = Some(spawned);
                 let name = format!(":{display}");
                 tracing::info!(display = %name, pid, "Xwayland starting");
+                // A hung start is given up on; a crash is noticed sooner
+                // (check_xwayland_startup runs after every loop iteration).
+                let _ = self.lh.insert_source(Timer::from_duration(STARTUP_TIMEOUT), move |_, _, state| {
+                    if state.xwayland.spawned == Some(spawned) {
+                        state.check_xwayland_startup();
+                    }
+                    TimeoutAction::Drop
+                });
             }
             Err(e) => tracing::warn!("cannot watch Xwayland: {}", e.error),
         }
@@ -293,6 +328,7 @@ impl Lumen {
         let x = &mut self.xwayland;
         x.wm = Some(wm);
         x.ready = true;
+        x.ready_at = Some(Instant::now());
         x.ready_after = x.spawned.map(|t| t.elapsed());
         let name = format!(":{display}");
         tracing::info!(
@@ -305,8 +341,38 @@ impl Lumen {
         self.x11_restack();
     }
 
+    /// Xwayland is starting: notice when it dies or hangs before it is ready.
+    /// smithay only reports a startup failure when reading its ready pipe
+    /// fails, not when the pipe is closed (Xwayland exited): its event source
+    /// would then wake the loop forever without an event, so the process is
+    /// looked at directly (after every loop iteration, and at the timeout).
+    pub fn check_xwayland_startup(&mut self) {
+        let x = &mut self.xwayland;
+        if x.ready || x.token.is_none() {
+            return;
+        }
+        if x.pid.is_none() {
+            x.pid = xwayland_child_pid();
+        }
+        // Its Wayland connection closes when it exits (a quick exit may be
+        // over before its pid was seen).
+        let disconnected = x.client.as_ref().is_some_and(|c| c.get_credentials(&self.dh).is_err());
+        let dead = disconnected || x.pid.is_some_and(|pid| !process_alive(pid));
+        let late = x.spawned.is_some_and(|t| t.elapsed() >= STARTUP_TIMEOUT);
+        if dead {
+            self.xwayland_lost("Xwayland exited during startup");
+        } else if late {
+            if let Some(pid) = x.pid {
+                // SAFETY: plain syscall; the pid is our own child.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            self.xwayland_lost("Xwayland did not start in time");
+        }
+    }
+
     /// Xwayland went away (crashed, or failed to start): forget its windows
-    /// and start a new one a moment later, a few times at most.
+    /// and selections, and start a new one a moment later, a few times in a
+    /// row at most.
     fn xwayland_lost(&mut self, why: &str) {
         tracing::warn!("{why}");
         let ids: Vec<u32> = self.wm.windows.iter().filter(|w| w.x11().is_some()).map(|w| w.id).collect();
@@ -317,8 +383,20 @@ impl Lumen {
         if self.xwayland.keyboard_grab.take().is_some() {
             self.sync_keyboard_focus();
         }
+        // Selections X clients owned are gone with them (ours are the only
+        // ones with compositor user data).
+        if current_data_device_selection_userdata(&self.seat).is_some() {
+            clear_data_device_selection(&self.dh, &self.seat);
+        }
+        if current_primary_selection_userdata(&self.seat).is_some() {
+            clear_primary_selection(&self.dh, &self.seat);
+        }
         let x = &mut self.xwayland;
+        if x.ready_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
+            x.failures = 0;
+        }
         x.ready = false;
+        x.ready_at = None;
         x.display = None;
         x.pid = None;
         x.client = None;
@@ -329,7 +407,7 @@ impl Lumen {
             let lh = self.lh.clone();
             self.lh.insert_idle(move |_| lh.remove(t));
         }
-        if self.xwayland.failures < MAX_FAILURES {
+        if self.xwayland.failures <= MAX_RESTARTS {
             let _ = self.lh.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
                 state.start_xwayland();
                 TimeoutAction::Drop
