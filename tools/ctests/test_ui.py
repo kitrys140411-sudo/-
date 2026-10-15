@@ -38,7 +38,8 @@ def test_buttons_inputs_and_toggles(t):
     g.click("name", "input")
     c.type("Hello Lumen")
     g.wait_log(r"^input name Hello Lumen$", m)
-    t.check(g.find("name", "input")["value"] == "Hello Lumen", "input value in the map")
+    # (Events are logged while the frame is built, the map after it.)
+    c.wait(lambda: g.find("name", "input")["value"] == "Hello Lumen", 10, "input value in the map")
     t.check(g.find("name", "input")["focused"], "the input has the keyboard")
     g.widget("Hello, Hello Lumen!")
     # Word-wise editing: Ctrl+Backspace deletes the last word, Ctrl+Z restores it.
