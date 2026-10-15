@@ -44,6 +44,7 @@ pub struct Egl {
     ctx: EGLContext,
     surf: EGLSurface,
     swap_damage: Option<EglSwapWithDamage>,
+    buffer_age: bool,
 }
 
 impl Egl {
@@ -104,7 +105,8 @@ impl Egl {
                     let p = eglGetProcAddress(c.as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*const c_void, EglSwapWithDamage>(p))
                 });
-            Ok(Egl { dpy, ctx, surf, swap_damage })
+            let buffer_age = exts.split(' ').any(|e| e == "EGL_EXT_buffer_age");
+            Ok(Egl { dpy, ctx, surf, swap_damage, buffer_age })
         }
     }
 
@@ -114,6 +116,18 @@ impl Egl {
             let p = glGetString(GL_RENDERER);
             if p.is_null() { String::new() } else { std::ffi::CStr::from_ptr(p.cast()).to_string_lossy().into_owned() }
         }
+    }
+
+    /// How many frames ago the back buffer about to be drawn was presented
+    /// (EGL_EXT_buffer_age); 0 when its contents are unknown.
+    pub fn buffer_age(&self) -> u32 {
+        if !self.buffer_age {
+            return 0;
+        }
+        let mut age = 0;
+        // SAFETY: valid display and surface; one EGLint out.
+        let ok = unsafe { eglQuerySurface(self.dpy, self.surf, EGL_BUFFER_AGE_EXT, &mut age) } == EGL_TRUE;
+        if ok { age.max(0) as u32 } else { 0 }
     }
 
     /// Present; `damage` in buffer pixels with a top-left origin.
@@ -522,13 +536,21 @@ impl Renderer {
         unsafe { glScissor(r.x, self.canvas_size.1 - r.y - r.h, r.w, r.h) };
     }
 
-    /// Copy the canvas to the window's back buffer (whose old contents are
-    /// unknown, so always all of it).
-    unsafe fn present_canvas(&self) {
+    /// Copy the canvas to the window's back buffer: all of it, or only
+    /// `region` when the rest of the back buffer is known to be current
+    /// (see [`Egl::buffer_age`]); a full-window copy is a large part of a
+    /// small update's cost with a software rasterizer.
+    unsafe fn present_canvas(&self, region: Option<IRect>) {
         let (w, h) = self.canvas_size;
         unsafe {
             glDisable(GL_BLEND);
-            glDisable(GL_SCISSOR_TEST);
+            match region {
+                Some(r) => {
+                    glEnable(GL_SCISSOR_TEST);
+                    self.scissor(r);
+                }
+                None => glDisable(GL_SCISSOR_TEST),
+            }
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             glViewport(0, 0, w, h);
             glUseProgram(self.blit.id);
@@ -580,25 +602,40 @@ impl Renderer {
                     }
                 }
             }
-            self.present_canvas();
+            self.present_canvas(None);
         }
     }
 
-    /// Redraw the `damage` part of the canvas from `list` (cleared to
-    /// transparent first), then copy the canvas to the window's back buffer.
-    /// Image primitives whose texture does not exist are skipped.
-    pub fn draw_list(&mut self, list: &DrawList, damage: Option<IRect>) {
+    /// Redraw the `damage` part of the canvas from `list` (cleared first,
+    /// to transparent or to the window background, see below), then copy
+    /// the canvas to the window's back buffer:
+    /// the `present` part of it (which must cover `damage`), or all of it
+    /// when None. Image primitives whose texture does not exist are skipped.
+    pub fn draw_list(&mut self, list: &DrawList, damage: Option<IRect>, present: Option<IRect>) {
         let (w, h) = self.canvas_size;
         let Some(damage) = damage.map(|d| d.intersect(&IRect::new(0, 0, w, h))).filter(|d| !d.is_empty()) else {
             // SAFETY: only the blit.
-            unsafe { self.present_canvas() };
+            unsafe { self.present_canvas(present) };
             return;
         };
         self.rects.clear();
         self.glyphs.clear();
         self.images.clear();
         self.batches.clear();
-        for it in &list.items {
+        // An opaque square fill under everything that covers the damage (the
+        // window background) becomes the clear color: one pass over every
+        // damaged pixel less for a software rasterizer.
+        let mut clear = [0.0; 4];
+        let mut skip = 0;
+        if let Some(Item { prim: Prim::Rect(r), clip }) = list.items.first() {
+            let [x, y, rw, rh] = r.rect;
+            let covers = x <= damage.x as f32 && y <= damage.y as f32 && x + rw >= (damage.x + damage.w) as f32 && y + rh >= (damage.y + damage.h) as f32;
+            if r.params[1] == KIND_FILL && r.params[0] <= 0.0 && r.color[3] >= 1.0 && covers && clip.intersect(&damage) == damage {
+                clear = r.color;
+                skip = 1;
+            }
+        }
+        for it in &list.items[skip..] {
             let clip = it.clip.intersect(&damage);
             if clip.is_empty() {
                 continue;
@@ -630,7 +667,7 @@ impl Renderer {
         unsafe {
             self.begin_canvas();
             self.scissor(damage);
-            glClearColor(0.0, 0.0, 0.0, 0.0);
+            glClearColor(clear[0], clear[1], clear[2], clear[3]);
             glClear(GL_COLOR_BUFFER_BIT);
             glBindVertexArray(self.vao_rect);
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo_rect);
@@ -687,7 +724,7 @@ impl Renderer {
             glyph_attribs(0);
             glBindVertexArray(self.vao_image);
             image_attribs(0);
-            self.present_canvas();
+            self.present_canvas(present);
         }
     }
 

@@ -29,6 +29,8 @@ pub const EGL_CONTEXT_MAJOR_VERSION: EGLint = 0x3098;
 pub const EGL_CONTEXT_MINOR_VERSION: EGLint = 0x30FB;
 pub const EGL_PLATFORM_WAYLAND_KHR: EGLenum = 0x31D8;
 pub const EGL_EXTENSIONS: EGLint = 0x3055;
+/// EGL_EXT_buffer_age: how many frames old the back buffer's contents are.
+pub const EGL_BUFFER_AGE_EXT: EGLint = 0x313D;
 pub const EGL_VENDOR: EGLint = 0x3053;
 
 pub type EglSwapWithDamage = unsafe extern "C" fn(EGLDisplay, EGLSurface, *const EGLint, EGLint) -> EGLBoolean;
@@ -50,6 +52,7 @@ unsafe extern "C" {
     pub fn eglGetError() -> EGLint;
     pub fn eglGetProcAddress(name: *const c_char) -> *const c_void;
     pub fn eglQueryString(dpy: EGLDisplay, name: EGLint) -> *const c_char;
+    pub fn eglQuerySurface(dpy: EGLDisplay, surface: EGLSurface, attribute: EGLint, value: *mut EGLint) -> EGLBoolean;
 }
 
 pub type GLenum = u32;

@@ -630,3 +630,49 @@ fn shortcut_field_records_a_combination() {
     assert_eq!(app.0 .0, None);
     assert!(h.log().contains(&"shortcut terminal Ctrl+Shift+S".to_string()));
 }
+
+/// The README's first example app and its harness snippet, verbatim, so
+/// the documentation stays true.
+#[test]
+fn readme_example_app() {
+    use crate::prelude::*;
+
+    #[derive(Default)]
+    struct Counter {
+        count: u32,
+        name: String,
+    }
+
+    impl App for Counter {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.title(format!("Counter — {}", self.count));
+            if ui.shortcut(Shortcut::ctrl('r')) {
+                self.count = 0;
+            }
+            Frame::column().fill_width().fill_height().padding(24.0).gap(12.0).show(ui, |ui| {
+                ui.heading("Hello");
+                ui.text_input("name", &mut self.name);
+                Frame::row().gap(8.0).show(ui, |ui| {
+                    if Button::new("Add").icon(Icon::Plus).primary().show(ui).clicked {
+                        self.count += 1;
+                    }
+                    ui.label(format!("{} clicks", self.count));
+                });
+            });
+        }
+    }
+
+    let Some(mut h) = harness(400.0, 300.0) else { return };
+    let mut app = Counter::default();
+    h.frame(&mut app);
+    h.click("Add");
+    h.frame(&mut app);
+    assert_eq!(app.count, 1);
+    assert!(h.widget("1 clicks").is_some());
+    h.click("name");
+    h.type_text("Ada");
+    h.key(Key::Char('r'), Mods::CTRL);
+    h.settle(&mut app);
+    assert_eq!(app.name, "Ada");
+    assert_eq!(app.count, 0, "Ctrl+R is not a text editing key, so it reaches the app");
+}

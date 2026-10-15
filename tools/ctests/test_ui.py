@@ -447,6 +447,22 @@ def test_live_graph_then_idle(t):
     c.screenshot("text")
 
 
+def perf_stats(lines):
+    """Frames, average frame time (view through the buffer swap) and
+    average toolkit time (build, layout, paint) over `perf` lines."""
+    stats = [dict(kv.split("=") for kv in ln.split()[1:]) for ln in lines if ln.startswith("perf ")]
+    frames = sum(int(s["frames"]) for s in stats)
+    avg = sum(float(s["avg_ms"]) * int(s["frames"]) for s in stats) / max(frames, 1)
+    ui = sum(float(s["ui_ms"]) * int(s["frames"]) for s in stats) / max(frames, 1)
+    return frames, avg, ui, sum(int(s["uploads"]) for s in stats)
+
+
+# Frame time limits: generous sanity bounds that catch pathologies (a
+# texture upload or a full redraw per frame, a quadratic layout) even on a
+# busy machine; the logged numbers are the benchmark.
+LIMITS = {"debug": (25.0, 80.0), "release": (4.0, 40.0)}
+
+
 def test_frame_times_and_uploads(t):
     c, g = start(t, "--page", "lists")
     # Scroll down and back so every glyph on the way is in the atlas, then
@@ -464,12 +480,36 @@ def test_frame_times_and_uploads(t):
         perf = [ln for ln in g.lines(m) if ln.startswith("perf ")]
         t.log(f"round {rnd}: {perf}")
     t.check(perf, "perf lines were logged")
-    stats = [dict(kv.split("=") for kv in ln.split()[1:]) for ln in perf]
-    uploads = sum(int(s["uploads"]) for s in stats)
+    frames, avg, ui, uploads = perf_stats(perf)
     t.check(uploads == 0, f"scrolling over known text uploads no textures: {perf}")
-    frames = sum(int(s["frames"]) for s in stats)
-    avg = sum(float(s["avg_ms"]) * int(s["frames"]) for s in stats) / frames
-    t.log(f"{frames} frames, average {avg:.2f} ms")
+    t.log(f"scrolling: {frames} frames, average {avg:.2f} ms, toolkit {ui:.2f} ms")
     t.check(frames >= 20, f"scrolling animates smoothly: {frames} frames")
-    limit = 40.0 if PROFILE == "debug" else 8.0
+    ui_limit, limit = LIMITS.get(PROFILE, LIMITS["debug"])
+    t.check(ui < ui_limit, f"toolkit time per frame {ui:.2f} ms ({PROFILE})")
     t.check(avg < limit, f"average frame {avg:.2f} ms ({PROFILE})")
+
+
+def test_small_updates_are_cheap(t):
+    # Typing redraws a small part of the window: with partial presentation
+    # that costs a fraction of a full frame.
+    c, g = start(t)
+    g.click("name", "input")
+    # Warm up (first frames, glyphs): its frames end up in perf lines of
+    # their own before the measured typing starts.
+    c.type("warm up ")
+    time.sleep(1.0)
+    m = g.mark()
+    for ch in "small updates":
+        c.type(ch)
+        time.sleep(0.08)
+    g.wait_log(r"^input name warm up small updates$", m)
+    # (The caret blinks, so the window never goes idle; perf lines come at
+    # the end of each burst of frames.)
+    time.sleep(1.0)
+    perf = [ln for ln in g.lines(m) if ln.startswith("perf ")]
+    frames, avg, ui, _ = perf_stats(perf)
+    t.log(f"typing: {perf}; {frames} frames, average {avg:.2f} ms, toolkit {ui:.2f} ms")
+    t.check(frames >= 8, f"a frame per key: {frames}")
+    ui_limit, limit = LIMITS.get(PROFILE, LIMITS["debug"])
+    t.check(ui < ui_limit, f"toolkit time per frame {ui:.2f} ms ({PROFILE})")
+    t.check(avg < limit / 2, f"average frame {avg:.2f} ms ({PROFILE})")

@@ -102,6 +102,9 @@ struct Runtime {
     list: DrawList,
     prev_list: DrawList,
     full_redraw: bool,
+    /// Damage of the last few presented frames, newest first: with the
+    /// back buffer's age they tell which part of it is out of date.
+    presented_damage: VecDeque<IRect>,
     events: VecDeque<Event>,
     /// Logical window size.
     size: (u32, u32),
@@ -131,9 +134,12 @@ struct Runtime {
     /// The pointer pressed on the resize border (events not passed on).
     resizing: bool,
     ready_logged: bool,
-    /// Frames, total and worst CPU time (ms) since the last perf line, and
-    /// the texture uploads (glyphs and images) when it was printed.
-    perf: (u32, f32, f32),
+    /// Frames, total and worst frame time (ms, `view` through the buffer
+    /// swap), and the part of it spent building, laying out and painting
+    /// the draw list (the toolkit's own CPU work, before any GL) since the
+    /// last perf line; the texture uploads (glyphs and images) when it was
+    /// printed.
+    perf: (u32, f32, f32, f32),
     perf_uploads: u64,
     /// Frames presented, and frames rendered (view run) — for tests.
     presented: u64,
@@ -201,6 +207,7 @@ pub fn run(options: Options, app: impl App + 'static) -> Result<(), String> {
         list: DrawList::default(),
         prev_list: DrawList::default(),
         full_redraw: true,
+        presented_damage: VecDeque::new(),
         events: VecDeque::new(),
         size: options.size,
         scale120: 120,
@@ -228,7 +235,7 @@ pub fn run(options: Options, app: impl App + 'static) -> Result<(), String> {
         mods: Mods::NONE,
         resizing: false,
         ready_logged: false,
-        perf: (0, 0.0, 0.0),
+        perf: (0, 0.0, 0.0, 0.0),
         perf_uploads: 0,
         presented: 0,
         renders: 0,
@@ -381,6 +388,7 @@ impl Runtime {
             self.full_redraw = true;
             self.run_passes(now);
         }
+        let ui_time = t0.elapsed().as_secs_f32() * 1000.0;
         let damage = if self.full_redraw { Some(IRect::new(0, 0, bw, bh)) } else { self.list.damage_since(&self.prev_list) };
         let animating = self.ui.animating;
         let renderer = self.renderer.as_mut().unwrap();
@@ -400,8 +408,12 @@ impl Runtime {
             self.after_frame(now);
             return;
         };
-        renderer.draw_list(&self.list, Some(damage));
-        let cpu = t0.elapsed().as_secs_f32() * 1000.0;
+        // Refresh only what changed since the back buffer was last shown
+        // (everything when its age is unknown).
+        let age = self.egl.as_ref().unwrap().buffer_age() as usize;
+        let present = (!self.full_redraw && age >= 1 && age - 1 <= self.presented_damage.len())
+            .then(|| self.presented_damage.iter().take(age - 1).fold(damage, |a, d| a.union(d)));
+        renderer.draw_list(&self.list, Some(damage), present);
         self.full_redraw = false;
         let surface = self.window.wl_surface().clone();
         if let Some(vp) = &self.viewport {
@@ -415,13 +427,19 @@ impl Runtime {
         if !self.egl.as_ref().unwrap().swap(Some((d.x, d.y, d.w, d.h)), bh) {
             eprintln!("lumen-ui: eglSwapBuffers failed");
         }
+        // Measured through the swap: a software rasterizer (llvmpipe) does
+        // the drawing there, and that is part of what a frame costs.
+        let cpu = t0.elapsed().as_secs_f32() * 1000.0;
         std::mem::swap(&mut self.list, &mut self.prev_list);
+        self.presented_damage.push_front(d);
+        self.presented_damage.truncate(4);
         self.presented += 1;
         self.frame_pending = true;
         self.needs_render = animating;
         self.perf.0 += 1;
         self.perf.1 += cpu;
         self.perf.2 = self.perf.2.max(cpu);
+        self.perf.3 += ui_time;
         self.report_perf(animating);
         if !self.ready_logged {
             self.ready_logged = true;
@@ -440,13 +458,14 @@ impl Runtime {
         let r = self.renderer.as_ref().unwrap();
         let uploads = r.atlas.uploads + r.texture_uploads;
         self.ui.log(&format!(
-            "perf frames={} avg_ms={:.2} max_ms={:.2} uploads={}",
+            "perf frames={} avg_ms={:.2} max_ms={:.2} ui_ms={:.2} uploads={}",
             self.perf.0,
             self.perf.1 / self.perf.0 as f32,
             self.perf.2,
+            self.perf.3 / self.perf.0 as f32,
             uploads - self.perf_uploads
         ));
-        self.perf = (0, 0.0, 0.0);
+        self.perf = (0, 0.0, 0.0, 0.0);
         self.perf_uploads = uploads;
     }
 
