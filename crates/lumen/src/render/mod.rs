@@ -62,8 +62,7 @@ pub struct RenderState {
     pub glass: glass::GlassCache,
     /// Glass panes requested by the shell for the frame being built.
     pub glass_requests: Vec<glass::GlassRequest>,
-    /// Do the work the first frame skipped (see [`warm_up`]) in the next frame.
-    pub warm_up: bool,
+    /// [`warm_up`] ran.
     pub warmed_up: bool,
     /// The lazy programs that the first frame compiled (startup report).
     pub lazy_at_first_frame: Option<Vec<&'static str>>,
@@ -81,7 +80,6 @@ impl RenderState {
             icons: crate::icons::IconCache::default(),
             glass: glass::GlassCache::default(),
             glass_requests: Vec::new(),
-            warm_up: false,
             warmed_up: false,
             lazy_at_first_frame: None,
         }
@@ -226,7 +224,7 @@ fn ensure_wallpaper_blurred(r: &mut GlesRenderer, rs: &mut RenderState, size: Si
 /// the blur passes get JIT-compiled (for the offscreen format glass blurs use
 /// too), so neither the first window under the panel nor the first overview
 /// stalls on it, and the desktop appears without waiting for it.
-fn warm_up(r: &mut GlesRenderer, rs: &mut RenderState, size: Size<i32, Physical>) {
+pub fn warm_up(r: &mut GlesRenderer, rs: &mut RenderState, size: Size<i32, Physical>) {
     let started = std::time::Instant::now();
     if let Some(s) = rs.shaders.as_ref() {
         let _ = (s.shadow.get(r), s.rounded_surface.get(r), s.rounded_texture.get(r));
@@ -389,10 +387,6 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     }
     ensure_wallpaper(r, ctx.rs, ctx.theme, phys);
     mark("wallpaper");
-    if ctx.rs.warm_up && ctx.primary.as_deref().is_none_or(|p| p == out_name) {
-        ctx.rs.warm_up = false;
-        warm_up(r, ctx.rs, phys);
-    }
     if ctx.rs.aliases.len() > 1024 {
         ctx.rs.aliases.clear();
     }

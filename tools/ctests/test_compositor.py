@@ -384,3 +384,40 @@ def test_integer_scale_and_output_enter(t):
     x0, y0 = int(w["x"] * 2), int(w["y"] * 2)
     body = img.pixel(x0 + 300, y0 + 300)
     t.check(body[2] > 170 and body[0] < 90, f"body {body}")
+
+
+def test_first_frame_defers_work(t):
+    """The first frame only compiles what it draws (software rendering JIT-compiles each
+    program and GL state, which dominated startup) and glass over the bare wallpaper samples
+    it instead of blurring; the rest is prepared shortly after, without a frame."""
+    import json
+    c = t.compositor()
+    s = json.loads(c.ipc("startup"))
+    names = [x["step"] for x in s["steps"]]
+    for step in ("EGL display", "GLES renderer", "shaders", "wallpaper", "render", "first frame"):
+        t.check(step in names, f"no startup step {step!r}: {names}")
+    at = [x["at_ms"] for x in s["steps"]]
+    t.check(at == sorted(at), f"steps out of order: {s['steps']}")
+    t.check(re.search(r"startup: logging \+\d+ ms .*first frame .*; total \d+ ms, \d+ ms CPU", c.log()), "no startup log line")
+    t.check(s["lazy_at_first_frame"] == [], f"the empty desktop compiled {s['lazy_at_first_frame']}")
+    t.check(s["glass_wallpaper"] >= 2 and s["glass_blurred"] == 0, f"glass panes {s}")
+    frames = c.stats()["frames"]
+    c.wait(lambda: json.loads(c.ipc("startup"))["warmed_up"], 30, "renderer warm-up")
+    s = json.loads(c.ipc("startup"))
+    t.check(set(s["lazy_compiled"]) == {"shadow", "rounded_surface", "kawase_down", "kawase_up", "rounded_texture"}, s)
+    t.check(c.stats()["frames"] == frames, "the warm-up rendered a frame")
+    # Windows near a glass pane get real blur again: the panel's lower edge turns red over a
+    # maximized red window, and goes back to the wallpaper's color once it is gone.
+    def panel_edge(name):
+        return c.screenshot(name).mean(300, 26, 520, 31)
+    empty = panel_edge("empty")
+    client, w = c.map_window("behind", "--color", "#d04030", "--size", "600x400")
+    c.action("maximize")
+    c.wait(lambda: not c.window("behind")["animating"] and c.window("behind")["layout"] == "maximized", 10, "maximized")
+    t.check(json.loads(c.ipc("startup"))["glass_blurred"] >= 1, "no blurred glass pane over the window")
+    red = panel_edge("maximized")
+    t.check((red[0] - red[2]) - (empty[0] - empty[2]) > 6, f"panel glass does not show the red window: {red} vs {empty}")
+    client.stop()
+    c.wait(lambda: json.loads(c.ipc("startup"))["glass_blurred"] == 0, 10, "glass back on the wallpaper")
+    again = panel_edge("empty-again")
+    t.check(max(abs(a - b) for a, b in zip(again, empty)) < 1.5, f"panel glass after the window closed: {again} vs {empty}")

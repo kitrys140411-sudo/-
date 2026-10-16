@@ -445,6 +445,7 @@ fn add_device(state: &mut Lumen, path: &Path, node: DrmNode) -> Result<(), Strin
     tracing::info!(software, render_node = ?render_node, "EGL initialized");
     crate::startup::mark("DRM device, EGL display");
     let context = EGLContext::new_with_priority(&display, ContextPriority::High).map_err(|e| format!("EGL context: {e}"))?;
+    crate::startup::mark("EGL context");
     let renderer = unsafe { GlesRenderer::new(context) }.map_err(|e| format!("GLES renderer: {e}"))?;
     crate::startup::mark("GLES renderer");
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();

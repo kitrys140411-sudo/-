@@ -78,6 +78,16 @@ impl Backend {
         }
     }
 
+    /// The renderer, outside of a frame (offscreen work, IPC captures).
+    pub fn renderer(&mut self) -> Option<&mut smithay::backend::renderer::gles::GlesRenderer> {
+        match self {
+            Backend::Udev(d) => d.renderer.as_mut(),
+            Backend::Winit(d) => Some(d.backend.renderer()),
+            Backend::Headless(d) => Some(&mut d.renderer),
+            Backend::None => None,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Backend::Udev(_) => "udev",

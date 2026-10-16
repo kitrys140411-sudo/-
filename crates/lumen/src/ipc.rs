@@ -569,12 +569,7 @@ impl Lumen {
         let size = crate::render::output_physical_size(&output);
         let scale = output.current_scale().fractional_scale();
         let (backend, mut ctx) = self.split_for_render();
-        let r = match backend {
-            Backend::Udev(d) => d.renderer.as_mut().ok_or("no renderer")?,
-            Backend::Winit(d) => d.backend.renderer(),
-            Backend::Headless(d) => &mut d.renderer,
-            Backend::None => return Err("no backend".into()),
-        };
+        let r = backend.renderer().ok_or("no renderer")?;
         let (elements, _) = crate::render::build_scene(r, &mut ctx, &output);
         Ok(crate::render::scanout_check(r, &elements, size, scale))
     }

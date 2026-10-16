@@ -41,6 +41,7 @@ pub fn renderer_for_device(prefer_hardware: bool) -> Result<GlesRenderer, String
     let display = unsafe { EGLDisplay::new(device) }.map_err(|e| format!("EGL display: {e}"))?;
     crate::startup::mark("EGL display");
     let context = EGLContext::new(&display).map_err(|e| format!("EGL context: {e}"))?;
+    crate::startup::mark("EGL context");
     let renderer = unsafe { GlesRenderer::new(context) }.map_err(|e| format!("GLES renderer: {e}"))?;
     crate::startup::mark("GLES renderer");
     Ok(renderer)

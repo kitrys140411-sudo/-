@@ -416,8 +416,11 @@ impl Lumen {
         // wallpaper) is prepared a moment later, see render::warm_up.
         let warm = Timer::from_duration(Duration::from_millis(WARM_UP_DELAY_MS));
         let _ = self.lh.insert_source(warm, |_, _, state| {
-            state.render.warm_up = true;
-            state.queue_redraw_all();
+            // Offscreen work only: nothing on screen changes, no frame.
+            let size = state.primary_output().map(crate::render::output_physical_size);
+            if let (Some(r), Some(size)) = (state.backend.renderer(), size) {
+                crate::render::warm_up(r, &mut state.render, size);
+            }
             TimeoutAction::Drop
         });
         // The idle clock starts with the desktop.
