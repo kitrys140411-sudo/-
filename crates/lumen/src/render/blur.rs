@@ -109,6 +109,7 @@ pub fn blur_region(
     dst: &mut GlesTexture,
 ) -> Result<(), GlesError> {
     let passes = passes.clamp(1, 6);
+    let (down, up) = (shaders.kawase_down.get(r)?, shaders.kawase_up.get(r)?);
     let size = region.size;
     let mut sizes = vec![size];
     let mut cur = src.clone();
@@ -118,7 +119,7 @@ pub fn blur_region(
         let base = sizes[level as usize - 1];
         let ns = Size::from(((base.w / 2).max(1), (base.h / 2).max(1)));
         let mut t = cache.get(r, 0, level, ns)?;
-        pass(r, &cur, cur_size, cur_rect.take(), &mut t, ns, &shaders.kawase_down, offset)?;
+        pass(r, &cur, cur_size, cur_rect.take(), &mut t, ns, down, offset)?;
         sizes.push(ns);
         cur = t;
         cur_size = ns;
@@ -126,11 +127,11 @@ pub fn blur_region(
     for level in (0..passes).rev() {
         let ts = sizes[level as usize];
         if level == 0 {
-            pass(r, &cur, cur_size, None, dst, ts, &shaders.kawase_up, offset)?;
+            pass(r, &cur, cur_size, None, dst, ts, up, offset)?;
             break;
         }
         let mut t = cache.get(r, 1, level, ts)?;
-        pass(r, &cur, cur_size, None, &mut t, ts, &shaders.kawase_up, offset)?;
+        pass(r, &cur, cur_size, None, &mut t, ts, up, offset)?;
         cur = t;
         cur_size = ts;
     }

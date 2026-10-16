@@ -62,6 +62,11 @@ pub struct RenderState {
     pub glass: glass::GlassCache,
     /// Glass panes requested by the shell for the frame being built.
     pub glass_requests: Vec<glass::GlassRequest>,
+    /// Do the work the first frame skipped (see [`warm_up`]) in the next frame.
+    pub warm_up: bool,
+    pub warmed_up: bool,
+    /// The lazy programs that the first frame compiled (startup report).
+    pub lazy_at_first_frame: Option<Vec<&'static str>>,
 }
 
 impl RenderState {
@@ -76,6 +81,9 @@ impl RenderState {
             icons: crate::icons::IconCache::default(),
             glass: glass::GlassCache::default(),
             glass_requests: Vec::new(),
+            warm_up: false,
+            warmed_up: false,
+            lazy_at_first_frame: None,
         }
     }
 }
@@ -131,19 +139,23 @@ pub fn output_logical_rect(output: &Output) -> Rectangle<f64, Logical> {
     Rectangle::new(output.current_location().to_f64(), size)
 }
 
-/// Render `elements` (front to back) into a new texture of `size`.
+/// Render `elements` (front to back) into a new texture of `size`, cleared
+/// first unless `clear` is None (the elements cover it with opaque pixels:
+/// one GL state fewer to compile on software rendering).
 pub fn render_to_texture(
     r: &mut GlesRenderer,
     size: Size<i32, Physical>,
     elements: &[LumenElement],
-    clear: Color32F,
+    clear: Option<Color32F>,
 ) -> Result<GlesTexture, smithay::backend::renderer::gles::GlesError> {
     let mut tex = blur::new_target(r, size)?;
     {
         let mut fb = r.bind(&mut tex)?;
         let mut frame = r.render(&mut fb, size, Transform::Normal)?;
         let full = Rectangle::from_size(size);
-        frame.clear(clear, &[full])?;
+        if let Some(clear) = clear {
+            frame.clear(clear, &[full])?;
+        }
         for e in elements.iter().rev() {
             let geo = e.geometry(Scale::from(1.0));
             let src = e.src();
@@ -179,7 +191,8 @@ fn ensure_wallpaper(r: &mut GlesRenderer, rs: &mut RenderState, theme: &Theme, s
         Kind::Unspecified,
     );
     let elems = [LumenElement::Pixel(elem)];
-    match render_to_texture(r, size, &elems, Color32F::new(0.0, 0.0, 0.0, 1.0)) {
+    // The wallpaper shader writes opaque pixels everywhere: no clear.
+    match render_to_texture(r, size, &elems, None) {
         Ok(tex) => {
             // Outputs come and go rarely; keep the cache from growing anyway.
             if rs.wallpapers.len() >= 4 {
@@ -206,6 +219,21 @@ fn ensure_wallpaper_blurred(r: &mut GlesRenderer, rs: &mut RenderState, size: Si
         Ok(t) => wp.blurred = Some(Image::from_texture(t, size).opaque()),
         Err(e) => tracing::warn!("wallpaper blur failed: {e:?}"),
     }
+}
+
+/// Shortly after the first frame: compile the programs it did not need and
+/// blur the wallpaper for the overview. On software rendering this is where
+/// the blur passes get JIT-compiled (for the offscreen format glass blurs use
+/// too), so neither the first window under the panel nor the first overview
+/// stalls on it, and the desktop appears without waiting for it.
+fn warm_up(r: &mut GlesRenderer, rs: &mut RenderState, size: Size<i32, Physical>) {
+    let started = std::time::Instant::now();
+    if let Some(s) = rs.shaders.as_ref() {
+        let _ = (s.shadow.get(r), s.rounded_surface.get(r), s.rounded_texture.get(r));
+    }
+    ensure_wallpaper_blurred(r, rs, size);
+    rs.warmed_up = true;
+    tracing::info!("renderer warmed up in {} ms", started.elapsed().as_millis());
 }
 
 /// Window surface elements drawn so that the window geometry covers `f`
@@ -238,11 +266,12 @@ fn push_window(
     };
     // X11 windows have no surface until Xwayland associated one.
     let surface = w.surface()?;
+    let rounded = shaders.rounded_surface.get(r).ok()?.clone();
     let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(r, &surface, render_loc, scale, alpha, Kind::Unspecified);
     let clip = Some(Clip { geo: clip_geo, radius });
     let mut wrap = |e: WaylandSurfaceRenderElement<GlesRenderer>, clip: Option<Clip>| {
-        let mut el = WindowSurfaceElement::new(e, origin, total, offset, clip, shaders.rounded_surface.clone())
+        let mut el = WindowSurfaceElement::new(e, origin, total, offset, clip, rounded.clone())
             .with_solid_program(shaders.rect.clone());
         if let Some((map, tag)) = aliases.as_mut() {
             let key = (el.inner_id().clone(), *tag);
@@ -347,6 +376,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     let clear = ctx.theme.colors.background;
     let clear = Color32F::new(clear.r, clear.g, clear.b, 1.0);
 
+    let mark = crate::startup::mark;
     if ctx.rs.shaders.is_none() {
         match Shaders::compile(r) {
             Ok(s) => ctx.rs.shaders = Some(s),
@@ -355,8 +385,14 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
                 return (elements, clear);
             }
         }
+        mark("shaders");
     }
     ensure_wallpaper(r, ctx.rs, ctx.theme, phys);
+    mark("wallpaper");
+    if ctx.rs.warm_up && ctx.primary.as_deref().is_none_or(|p| p == out_name) {
+        ctx.rs.warm_up = false;
+        warm_up(r, ctx.rs, phys);
+    }
     if ctx.rs.aliases.len() > 1024 {
         ctx.rs.aliases.clear();
     }
@@ -366,6 +402,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     // the panel and the dock (menus of X11 apps may cover those).
     ctx.rs.glass_requests.clear();
     cursor_elements(r, ctx, out_rect, scale, &mut elements);
+    mark("cursor");
     let overview = ctx.shell.overview_progress();
     let mut overrides = |r: &mut GlesRenderer, ctx: &mut SceneCtx, elements: &mut Vec<LumenElement>| {
         override_elements(r, ctx.wm, out_rect, scale, (1.0 - overview) as f32, elements);
@@ -375,6 +412,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     } else {
         overrides(r, ctx, &mut elements);
     }
+    mark("shell UI (panel, dock)");
 
     // Overview slots of every workspace on screen (several while sliding);
     // the overview lives on the primary output only.
@@ -415,7 +453,9 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         for (k, c) in ctx.wm.closing.iter_mut().enumerate() {
             if !ghost_done[k] && c.ws == wws && !c.above.contains(&wid) {
                 ghost_done[k] = true;
-                elements.extend(ghost_element(c, ghost_dx[k], out_rect, scale, g.window_radius, &shaders.rounded_texture));
+                if let Ok(prog) = shaders.rounded_texture.get(r) {
+                    elements.extend(ghost_element(c, ghost_dx[k], out_rect, scale, g.window_radius, prog));
+                }
             }
         }
         let w = &ctx.wm.windows[i];
@@ -490,7 +530,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
         }
 
         // Shadow under the window.
-        let shadow_prog = shaders.shadow.clone();
+        let shadow_prog = shaders.shadow.get(r).ok().cloned();
         let w = &mut ctx.wm.windows[i];
         if is_primary {
             w.last_drawn = Some(Rectangle::new(
@@ -498,7 +538,7 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
                 f_log.size,
             ));
         }
-        if !matches!(w.layout, Layout::Fullscreen { .. }) {
+        if let (false, Some(shadow_prog)) = (matches!(w.layout, Layout::Fullscreen { .. }), shadow_prog) {
             let sigma = g.shadow_blur * scale * total.max(0.3) / 2.0;
             let dy = g.shadow_offset_y * scale * total;
             let strength = if Some(w.id) == focused { g.shadow_alpha_focused } else { g.shadow_alpha } as f32;
@@ -525,7 +565,9 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     let shaders = ctx.rs.shaders.as_ref().unwrap();
     for (k, c) in ctx.wm.closing.iter_mut().enumerate() {
         if !ghost_done[k] {
-            elements.extend(ghost_element(c, ghost_dx[k], out_rect, scale, g.window_radius, &shaders.rounded_texture));
+            if let Ok(prog) = shaders.rounded_texture.get(r) {
+                elements.extend(ghost_element(c, ghost_dx[k], out_rect, scale, g.window_radius, prog));
+            }
         }
     }
 
@@ -555,11 +597,13 @@ pub fn build_scene(r: &mut GlesRenderer, ctx: &mut SceneCtx, output: &Output) ->
     // Frost what is behind the shell's glass panes.
     let requests = std::mem::take(&mut ctx.rs.glass_requests);
     if !requests.is_empty() {
-        let RenderState { shaders, glass, .. } = &mut *ctx.rs;
+        let RenderState { shaders, glass, wallpapers, .. } = &mut *ctx.rs;
+        let wallpaper = wallpapers.get(&(phys.w, phys.h)).map(|wp| (wp.image.id(), &wp.source));
         if let Some(shaders) = shaders.as_ref() {
-            glass.apply(r, shaders, theme, &out_name, phys, scale, requests, &mut elements, clear);
+            glass.apply(r, shaders, theme, &out_name, phys, scale, requests, &mut elements, clear, wallpaper);
         }
     }
+    mark("windows, glass");
     ctx.rs.text.end_frame();
     (elements, clear)
 }

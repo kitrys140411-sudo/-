@@ -23,6 +23,7 @@ mod power;
 mod render;
 mod selection;
 mod shell;
+mod startup;
 mod state;
 mod text;
 mod theme;
@@ -118,6 +119,7 @@ fn termination_signalfd() -> std::io::Result<OwnedFd> {
 }
 
 fn main() -> ExitCode {
+    startup::begin();
     let sigfd = match termination_signalfd() {
         Ok(fd) => fd,
         Err(e) => {
@@ -138,6 +140,7 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
+    startup::mark("logging");
 
     match run(args, sigfd) {
         Ok(()) => ExitCode::SUCCESS,
@@ -169,12 +172,14 @@ fn run(args: Args, sigfd: OwnedFd) -> Result<(), String> {
         "headless" => backend::headless::init(&mut state, args.size.into(), args.scale)?,
         other => return Err(format!("unknown backend '{other}'")),
     }
+    startup::mark("backend");
     tracing::info!(backend = state.backend.name(), socket = ?state.socket_name, "compositor running");
 
     state.start_clock();
     state.start_power_monitor();
     let ipc_path = ipc::init(&mut state)?;
     tracing::info!("control socket at {}", ipc_path.display());
+    startup::mark("control socket, power monitor");
 
     event_loop
         .handle()

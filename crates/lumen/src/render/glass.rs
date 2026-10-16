@@ -5,12 +5,17 @@
 //!
 //! A pane only re-renders when something behind it changed: the ids,
 //! commits, positions and opacities of the elements it covers are hashed
-//! every frame and compared with the last blur.
+//! every frame and compared with the last blur. A pane with nothing but the
+//! wallpaper behind it (the empty desktop, so the first frame) samples the
+//! wallpaper directly: blurring a smooth gradient changes nothing visible,
+//! and skipping it saves the capture and blur passes, which on software
+//! rendering are the most expensive part of the first frame (each program
+//! and GL state is JIT-compiled on first use).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use smithay::backend::renderer::element::{Element, RenderElement};
+use smithay::backend::renderer::element::{Element, Id, RenderElement};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture, Uniform};
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer};
@@ -41,6 +46,8 @@ struct Pane {
     region: Rectangle<i32, Physical>,
     signature: u64,
     used: bool,
+    /// The texture is the wallpaper's (never a blur target).
+    borrowed: bool,
 }
 
 #[derive(Default)]
@@ -101,6 +108,12 @@ fn capture(
 }
 
 impl GlassCache {
+    /// Panes drawn from a blur and panes sampling the wallpaper directly.
+    pub fn counts(&self) -> (usize, usize) {
+        let sampled = self.panes.values().filter(|p| p.borrowed).count();
+        (self.panes.len() - sampled, sampled)
+    }
+
     /// Insert a glass element behind every requested pane.
     #[allow(clippy::too_many_arguments)]
     pub fn apply(
@@ -114,6 +127,7 @@ impl GlassCache {
         mut requests: Vec<GlassRequest>,
         elements: &mut Vec<LumenElement>,
         clear: Color32F,
+        wallpaper: Option<(&Id, &GlesTexture)>,
     ) {
         for ((o, _, _), p) in self.panes.iter_mut() {
             if o == output {
@@ -144,8 +158,24 @@ impl GlassCache {
             let behind = &elements[req.index + 1..];
             let sig = signature(behind, region, scale);
             let key = (output.to_string(), req.key.0, req.key.1);
+            let whole = Rectangle::<i32, Physical>::from_size(size);
+            let only_wallpaper = wallpaper.filter(|(id, _)| {
+                behind.iter().all(|e| e.id() == *id || !e.geometry(Scale::from(scale)).overlaps(region))
+            });
             let fresh = self.panes.get(&key).is_none_or(|p| p.signature != sig || p.region != region);
-            if fresh {
+            if let Some((_, texture)) = only_wallpaper {
+                match self.panes.get_mut(&key) {
+                    Some(p) if p.borrowed && p.region == whole && p.image.texture().tex_id() == texture.tex_id() => {}
+                    Some(p) => {
+                        p.image.set_texture(texture.clone(), size);
+                        (p.region, p.signature, p.borrowed) = (whole, sig, true);
+                    }
+                    None => {
+                        let image = Image::from_texture(texture.clone(), size);
+                        self.panes.insert(key.clone(), Pane { image, region: whole, signature: sig, used: true, borrowed: true });
+                    }
+                }
+            } else if fresh {
                 let blurred = (|| -> Result<GlesTexture, smithay::backend::renderer::gles::GlesError> {
                     let mut cap = match self.capture.get(&(size.w, size.h)) {
                         Some(t) => t.clone(),
@@ -164,7 +194,7 @@ impl GlassCache {
                         .unwrap_or(region);
                     capture(r, &mut cap, size, pad, behind, clear, scale)?;
                     // Reuse the pane's texture when its size is unchanged.
-                    let mut out = match self.panes.get(&key).filter(|p| p.region.size == region.size) {
+                    let mut out = match self.panes.get(&key).filter(|p| p.region.size == region.size && !p.borrowed) {
                         Some(p) => p.image.texture().clone(),
                         None => blur::new_target(r, region.size)?,
                     };
@@ -175,13 +205,12 @@ impl GlassCache {
                     Ok(tex) => match self.panes.get_mut(&key) {
                         Some(p) => {
                             p.image.set_texture(tex, region.size);
-                            p.region = region;
-                            p.signature = sig;
+                            (p.region, p.signature, p.borrowed) = (region, sig, false);
                         }
                         None => {
                             self.panes.insert(
                                 key.clone(),
-                                Pane { image: Image::from_texture(tex, region.size), region, signature: sig, used: true },
+                                Pane { image: Image::from_texture(tex, region.size), region, signature: sig, used: true, borrowed: false },
                             );
                         }
                     },
@@ -193,6 +222,8 @@ impl GlassCache {
             }
             let Some(p) = self.panes.get_mut(&key) else { continue };
             p.used = true;
+            // What the pane's texture covers: the blurred region, or the output.
+            let region = p.region;
             let src = Rectangle::<f64, Buffer>::new(
                 ((dst.loc.x - region.loc.x) as f64, (dst.loc.y - region.loc.y) as f64).into(),
                 (dst.size.w as f64, dst.size.h as f64).into(),

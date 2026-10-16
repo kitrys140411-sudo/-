@@ -443,8 +443,10 @@ fn add_device(state: &mut Lumen, path: &Path, node: DrmNode) -> Result<(), Strin
     let software = egl_device.as_ref().is_some_and(|d| d.is_software());
     let render_node = egl_device.and_then(|d| d.try_get_render_node().ok().flatten());
     tracing::info!(software, render_node = ?render_node, "EGL initialized");
+    crate::startup::mark("DRM device, EGL display");
     let context = EGLContext::new_with_priority(&display, ContextPriority::High).map_err(|e| format!("EGL context: {e}"))?;
     let renderer = unsafe { GlesRenderer::new(context) }.map_err(|e| format!("GLES renderer: {e}"))?;
+    crate::startup::mark("GLES renderer");
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
     super::update_shm_formats(&mut state.shm_state, &renderer);
 
@@ -485,6 +487,7 @@ fn add_device(state: &mut Lumen, path: &Path, node: DrmNode) -> Result<(), Strin
     d.renderer = Some(renderer);
     d.device = Some(Device { manager, surfaces: HashMap::new(), dmabuf_main, _token: token });
     scan_connectors(state);
+    crate::startup::mark("outputs");
     Ok(())
 }
 
@@ -700,6 +703,7 @@ fn render_surface(state: &mut Lumen, crtc: crtc::Handle) {
             .map_err(|e| format!("{e:?}"))
     };
     let took = start.elapsed();
+    crate::startup::mark("render");
     let result = result.map(|(damaged, direct, states)| {
         if damaged {
             state.stats.note_scanout(direct);

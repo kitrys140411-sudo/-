@@ -27,6 +27,7 @@
 //!   idle                     idle state: inhibitors, blanking, timeout (JSON)
 //!   idle-timeout <seconds>   blank the screen after this long without input (0: never)
 //!   scene                    whether the frame could be scanned out without composition (JSON)
+//!   startup                  startup timeline, programs deferred past the first frame, glass panes (JSON)
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -177,6 +178,7 @@ impl Lumen {
             }
             ("socket", []) => self.socket_name.to_string_lossy().into_owned(),
             ("stats", []) => self.ipc_stats(),
+            ("startup", []) => self.ipc_startup(),
             ("shell", []) => self.ipc_shell(),
             ("keybindings", []) => self.ipc_keybindings(),
             ("reload-keybindings", []) => match self.reload_keybindings() {
@@ -594,6 +596,26 @@ impl Lumen {
             })
             .collect();
         format!("[{}]", items.join(","))
+    }
+
+    /// The startup timeline (see crate::startup) and what the renderer
+    /// deferred past the first frame.
+    fn ipc_startup(&self) -> String {
+        let steps: Vec<String> = crate::startup::steps()
+            .iter()
+            .map(|(n, at, cpu)| format!("{{\"step\":{},\"at_ms\":{at},\"cpu_ms\":{cpu}}}", json_str(n)))
+            .collect();
+        let names = |v: &[&str]| v.iter().map(|n| json_str(n)).collect::<Vec<_>>().join(",");
+        let rs = &self.render;
+        let compiled = rs.shaders.as_ref().map(|s| s.compiled_lazy()).unwrap_or_default();
+        let (blurred, sampled) = rs.glass.counts();
+        format!(
+            "{{\"steps\":[{}],\"lazy_at_first_frame\":{},\"lazy_compiled\":[{}],\"warmed_up\":{},\"glass_blurred\":{blurred},\"glass_wallpaper\":{sampled}}}",
+            steps.join(","),
+            rs.lazy_at_first_frame.as_ref().map(|v| format!("[{}]", names(v))).unwrap_or_else(|| "null".into()),
+            names(&compiled),
+            rs.warmed_up,
+        )
     }
 
     fn ipc_stats(&self) -> String {

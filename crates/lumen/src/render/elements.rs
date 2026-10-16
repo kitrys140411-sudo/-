@@ -507,6 +507,11 @@ impl Image {
         &self.texture
     }
 
+    /// The id its elements carry.
+    pub fn id(&self) -> &Id {
+        &self.id
+    }
+
     /// Replace the texture (new content, same element).
     pub fn set_texture(&mut self, texture: GlesTexture, size: Size<i32, Physical>) {
         self.texture = texture;

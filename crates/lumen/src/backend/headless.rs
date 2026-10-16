@@ -39,8 +39,11 @@ pub fn renderer_for_device(prefer_hardware: bool) -> Result<GlesRenderer, String
         .ok_or("no EGL devices")?;
     let device = devices.into_iter().nth(pick).unwrap();
     let display = unsafe { EGLDisplay::new(device) }.map_err(|e| format!("EGL display: {e}"))?;
+    crate::startup::mark("EGL display");
     let context = EGLContext::new(&display).map_err(|e| format!("EGL context: {e}"))?;
-    unsafe { GlesRenderer::new(context) }.map_err(|e| format!("GLES renderer: {e}"))
+    let renderer = unsafe { GlesRenderer::new(context) }.map_err(|e| format!("GLES renderer: {e}"))?;
+    crate::startup::mark("GLES renderer");
+    Ok(renderer)
 }
 
 impl HeadlessData {
@@ -132,6 +135,7 @@ fn render(state: &mut Lumen) {
         }
     };
     let render_ms = start.elapsed().as_secs_f32() * 1000.0;
+    crate::startup::mark("render");
     match result {
         Ok(damaged) => {
             if damaged {

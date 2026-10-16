@@ -11,6 +11,7 @@ use smithay::input::{Seat, SeatState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -42,6 +43,10 @@ use crate::keybind::{KeyBindings, Mods};
 use crate::layouts::{Layouts, XkbNames};
 use crate::volume::VolumeCmd;
 use crate::render::RenderState;
+
+/// How long after the first frame the renderer prepares what that frame
+/// skipped (clients and Xwayland get to start first).
+const WARM_UP_DELAY_MS: u64 = 1500;
 use crate::shell::Shell;
 use crate::theme::Theme;
 use crate::wm::Wm;
@@ -238,6 +243,7 @@ impl Lumen {
         let shortcuts_inhibit_state = smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Lumen>(&dh);
         let idle_inhibit_state = smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Lumen>(&dh);
         let xwayland = crate::xwayland::XwaylandState::new(&dh);
+        crate::startup::mark("wayland globals");
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_pointer();
@@ -261,6 +267,7 @@ impl Lumen {
         }
         let layouts = Layouts::new(&input_cfg.keyboard);
         tracing::info!(layouts = %input_cfg.keyboard.xkb_layout(), "keyboard");
+        crate::startup::mark("keyboard (xkb keymap)");
 
         let theme = Theme::load();
         let (keys, key_errors) = KeyBindings::load();
@@ -269,11 +276,16 @@ impl Lumen {
             startup_notices.push(("Keyboard shortcuts not loaded".to_string(), format!("{e}\nThe default shortcuts are in effect.")));
         }
         tracing::info!("{} keyboard shortcuts", keys.bindings.len());
+        crate::startup::mark("theme, keybindings");
         let bg = Background::new(&lh);
         let wm = Wm::new(&theme);
         let mut shell = Shell::new(&theme);
         shell.layout_label = layouts.indicator().map(String::from);
+        crate::startup::mark("shell");
         let render = RenderState::new(&theme);
+        crate::startup::mark("fonts");
+        let cursor_theme = CursorTheme::load();
+        crate::startup::mark("cursor theme");
 
         Lumen {
             dh,
@@ -304,7 +316,7 @@ impl Lumen {
             cursor_status: CursorImageStatus::default_named(),
             dnd_icon: None,
             pointer_target: None,
-            cursor_theme: CursorTheme::load(),
+            cursor_theme,
             pointer_pos: (0.0, 0.0).into(),
             suppressed_keys: Vec::new(),
             mod_chord: None,
@@ -388,6 +400,8 @@ impl Lumen {
             }
         }
         tracing::info!("first frame presented");
+        crate::startup::finish();
+        self.render.lazy_at_first_frame = Some(self.render.shaders.as_ref().map(|s| s.compiled_lazy()).unwrap_or_default());
         // X11 support starts once the desktop is on screen (off the boot
         // path), and the autostart program right after it, so it gets
         // DISPLAY and does not compete with the first frame for the CPU.
@@ -397,6 +411,14 @@ impl Lumen {
             if !cmd.is_empty() {
                 state.spawn(&cmd);
             }
+        });
+        // What the first frame left out (programs, the overview's blurred
+        // wallpaper) is prepared a moment later, see render::warm_up.
+        let warm = Timer::from_duration(Duration::from_millis(WARM_UP_DELAY_MS));
+        let _ = self.lh.insert_source(warm, |_, _, state| {
+            state.render.warm_up = true;
+            state.queue_redraw_all();
+            TimeoutAction::Drop
         });
         // The idle clock starts with the desktop.
         self.note_input();

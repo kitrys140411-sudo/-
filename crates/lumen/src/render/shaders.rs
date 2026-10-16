@@ -5,6 +5,8 @@
 //! coordinates) and `tex`. All sizes below are passed so that antialiasing is
 //! computed in physical pixels (crisp at fractional scales).
 
+use std::cell::OnceCell;
+
 use smithay::backend::renderer::gles::{
     GlesError, GlesPixelProgram, GlesRenderer, GlesTexProgram, UniformName, UniformType,
 };
@@ -245,15 +247,49 @@ void main() {
 }
 "#;
 
+/// A program compiled on first use. llvmpipe (software rendering) compiles
+/// every program, and JIT-compiles it again for each GL state it is drawn
+/// with, at tens of milliseconds each natively and seconds under emulation,
+/// so the first frame only compiles what it draws: the wallpaper, shapes and
+/// glass. The rest waits for the first window, blur or closing animation.
+pub struct Lazy<P> {
+    name: &'static str,
+    compile: fn(&mut GlesRenderer) -> Result<P, GlesError>,
+    program: OnceCell<Option<P>>,
+}
+
+impl<P> Lazy<P> {
+    fn new(name: &'static str, compile: fn(&mut GlesRenderer) -> Result<P, GlesError>) -> Lazy<P> {
+        Lazy { name, compile, program: OnceCell::new() }
+    }
+
+    /// The program, compiled now if needed. A failure is logged once (it is
+    /// a bug in the GLSL) and not retried every frame.
+    pub fn get(&self, r: &mut GlesRenderer) -> Result<&P, GlesError> {
+        self.program
+            .get_or_init(|| {
+                (self.compile)(r)
+                    .inspect_err(|e| tracing::error!("shader {} failed to compile: {e:?}", self.name))
+                    .ok()
+            })
+            .as_ref()
+            .ok_or(GlesError::ProgramLinkError)
+    }
+
+    fn compiled(&self) -> bool {
+        self.program.get().is_some()
+    }
+}
+
 pub struct Shaders {
     pub rect: GlesPixelProgram,
-    pub shadow: GlesPixelProgram,
     pub wallpaper: GlesPixelProgram,
-    pub rounded_surface: GlesTexProgram,
     pub glass: GlesTexProgram,
-    pub kawase_down: GlesTexProgram,
-    pub kawase_up: GlesTexProgram,
-    pub rounded_texture: GlesTexProgram,
+    pub shadow: Lazy<GlesPixelProgram>,
+    pub rounded_surface: Lazy<GlesTexProgram>,
+    pub kawase_down: Lazy<GlesTexProgram>,
+    pub kawase_up: Lazy<GlesTexProgram>,
+    pub rounded_texture: Lazy<GlesTexProgram>,
 }
 
 fn u(name: &'static str, ty: UniformType) -> UniformName<'static> {
@@ -270,6 +306,19 @@ fn texture(r: &mut GlesRenderer, body: &str, uniforms: &[UniformName<'_>]) -> Re
 }
 
 impl Shaders {
+    /// Names of the [`Lazy`] programs compiled so far.
+    pub fn compiled_lazy(&self) -> Vec<&'static str> {
+        let lazy = [
+            (self.shadow.name, self.shadow.compiled()),
+            (self.rounded_surface.name, self.rounded_surface.compiled()),
+            (self.kawase_down.name, self.kawase_down.compiled()),
+            (self.kawase_up.name, self.kawase_up.compiled()),
+            (self.rounded_texture.name, self.rounded_texture.compiled()),
+        ];
+        lazy.into_iter().filter(|(_, c)| *c).map(|(n, _)| n).collect()
+    }
+
+    /// Compile what the first frame draws; the rest is [`Lazy`].
     pub fn compile(r: &mut GlesRenderer) -> Result<Shaders, GlesError> {
         use UniformType::*;
         Ok(Shaders {
@@ -278,9 +327,7 @@ impl Shaders {
                 RECT,
                 &[u("fill", _4f), u("fill2", _4f), u("border", _4f), u("border_width", _1f), u("radius", _1f), u("box", _4f)],
             )?,
-            shadow: pixel(r, SHADOW, &[u("color", _4f), u("box", _4f), u("radius", _1f), u("sigma", _1f), u("cutout", _4f)])?,
             wallpaper: pixel(r, WALLPAPER, &[u("top", _4f), u("bottom", _4f), u("glow_a", _4f), u("glow_b", _4f)])?,
-            rounded_surface: texture(r, ROUNDED_SURFACE, &[u("geo_size", _2f), u("radius", _1f), u("input_to_geo", Matrix3x3)])?,
             glass: texture(
                 r,
                 GLASS,
@@ -293,9 +340,15 @@ impl Shaders {
                     u("uv_rect", _4f),
                 ],
             )?,
-            kawase_down: texture(r, KAWASE_DOWN, &[u("half_pixel", _2f), u("offset", _1f)])?,
-            kawase_up: texture(r, KAWASE_UP, &[u("half_pixel", _2f), u("offset", _1f)])?,
-            rounded_texture: texture(r, ROUNDED_TEXTURE, &[u("px_size", _2f), u("radius", _1f)])?,
+            shadow: Lazy::new("shadow", |r| {
+                pixel(r, SHADOW, &[u("color", _4f), u("box", _4f), u("radius", _1f), u("sigma", _1f), u("cutout", _4f)])
+            }),
+            rounded_surface: Lazy::new("rounded_surface", |r| {
+                texture(r, ROUNDED_SURFACE, &[u("geo_size", _2f), u("radius", _1f), u("input_to_geo", Matrix3x3)])
+            }),
+            kawase_down: Lazy::new("kawase_down", |r| texture(r, KAWASE_DOWN, &[u("half_pixel", _2f), u("offset", _1f)])),
+            kawase_up: Lazy::new("kawase_up", |r| texture(r, KAWASE_UP, &[u("half_pixel", _2f), u("offset", _1f)])),
+            rounded_texture: Lazy::new("rounded_texture", |r| texture(r, ROUNDED_TEXTURE, &[u("px_size", _2f), u("radius", _1f)])),
         })
     }
 }

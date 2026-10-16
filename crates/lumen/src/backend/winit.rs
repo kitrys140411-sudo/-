@@ -122,6 +122,7 @@ fn render(state: &mut Lumen) {
             Err(e) => Err(e),
         }
     };
+    crate::startup::mark("render");
     match result {
         Ok(true) => state.stats.push_render(start.elapsed().as_secs_f32() * 1000.0),
         Ok(false) => {}
