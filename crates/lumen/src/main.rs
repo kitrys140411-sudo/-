@@ -56,7 +56,7 @@ environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_INPUT
              and backlights), LUMEN_POWER_POLL_MS, LUMEN_OUTPUT_NAME (headless output name),
              LUMEN_XWAYLAND=0 (no X11 support), LUMEN_IDLE_BLANK (minutes until the screen blanks, 0 = never),
              LUMEN_XWAYLAND_SCALE (auto|native|scaled: X11 apps on scaled outputs), LUMEN_VRR (fullscreen|off|always),
-             LUMEN_DRM_DEVICE (GPU to render on, default: the boot GPU)";
+             LUMEN_DRM_DEVICE (GPU to drive, default: the boot GPU, or one with a display connected)";
 
 struct Args {
     backend: String,

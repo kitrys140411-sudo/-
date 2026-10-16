@@ -16,6 +16,13 @@
 //!   on top) keeps the screen on; otherwise outputs are blanked (DPMS off on
 //!   KMS) after `LUMEN_IDLE_BLANK` minutes without input (default 10, 0 =
 //!   never; `idle-timeout <s>` on the control socket changes it at runtime).
+//!   Known gaps: only keyboard, pointer and scroll input count as activity
+//!   (libinput does not handle gamepads), and X11 apps cannot inhibit
+//!   (Xwayland does not turn XScreenSaverSuspend into an idle inhibitor and
+//!   there is no org.freedesktop.ScreenSaver service). So a windowed X11
+//!   video player, or a windowed game played only with a controller, lets the
+//!   screen blank; fullscreen ones keep it on. Raise `LUMEN_IDLE_BLANK` (or set
+//!   it to 0) if that matters.
 
 use std::time::Duration;
 

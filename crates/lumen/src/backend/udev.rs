@@ -267,6 +267,44 @@ fn input_device_added(state: &mut Lumen, mut device: libinput::Device) {
     }
 }
 
+/// The GPU to drive: `forced` (LUMEN_DRM_DEVICE) if set, else the boot GPU
+/// when it has a connected display (or no GPU has one, e.g. while every
+/// monitor is unplugged), else the first GPU with a connected display.
+fn choose_gpu(
+    forced: Option<std::path::PathBuf>,
+    boot: Option<std::path::PathBuf>,
+    gpus: &[std::path::PathBuf],
+    connected: impl Fn(&Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if forced.is_some() {
+        return forced;
+    }
+    let first = boot.or_else(|| gpus.first().cloned())?;
+    if connected(&first) {
+        return Some(first);
+    }
+    match gpus.iter().find(|g| connected(g)) {
+        Some(other) => {
+            tracing::info!("{} has no connected display; using {}", first.display(), other.display());
+            Some(other.clone())
+        }
+        None => Some(first),
+    }
+}
+
+/// Whether a DRM card (`/dev/dri/cardN`) has a connector with a display
+/// attached, read from sysfs (`/sys/class/drm/cardN-*/status`) so that no
+/// device has to be opened through the session for the check.
+fn has_connected_display(card: &Path) -> bool {
+    let Some(name) = card.file_name().and_then(|n| n.to_str()) else { return false };
+    let Ok(dir) = std::fs::read_dir(Path::new("/sys/class/drm").join(name)) else { return false };
+    let prefix = format!("{name}-");
+    dir.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix))
+            && std::fs::read_to_string(e.path().join("status")).is_ok_and(|s| s.trim() == "connected")
+    })
+}
+
 fn pick_scale(info: &connector::Info, mode: &smithay::reexports::drm::control::Mode) -> f64 {
     if let Some(s) = std::env::var("LUMEN_SCALE").ok().and_then(|v| v.parse::<f64>().ok()) {
         return s.clamp(0.5, 4.0);
@@ -290,18 +328,23 @@ fn pick_scale(info: &connector::Info, mode: &smithay::reexports::drm::control::M
 pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backend::session::libseat::LibSeatSessionNotifier) -> Result<(), String> {
     let lh = state.lh.clone();
     let seat = session.seat();
-    // Render and scan out on the boot GPU (the one the firmware lit up: on
-    // laptops with an iGPU and a dGPU, the iGPU driving the panel). Games can
-    // still render on the dGPU (DRI_PRIME, Vulkan device selection): their
-    // dmabufs are imported here. LUMEN_DRM_DEVICE overrides the choice.
+    // Render and scan out on one GPU, the boot GPU (the one the firmware lit
+    // up: on laptops with an iGPU and a dGPU, the iGPU driving the panel).
+    // Games can still render on the dGPU (DRI_PRIME, Vulkan device selection):
+    // their dmabufs are imported here. Outputs wired to another GPU are not
+    // driven, so when the boot GPU has no connected display (a docked laptop
+    // with the lid closed and the monitor on the dGPU's HDMI port) a GPU that
+    // has one is used instead. LUMEN_DRM_DEVICE overrides the choice.
     let gpus = udev::all_gpus(&seat).unwrap_or_default();
-    let path = std::env::var_os("LUMEN_DRM_DEVICE")
-        .map(std::path::PathBuf::from)
-        .or_else(|| udev::primary_gpu(&seat).ok().flatten())
-        .or_else(|| gpus.first().cloned())
-        .ok_or("no GPU found")?;
+    let boot = udev::primary_gpu(&seat).ok().flatten();
+    let forced = std::env::var_os("LUMEN_DRM_DEVICE").map(std::path::PathBuf::from);
+    let path = choose_gpu(forced, boot.clone(), &gpus, has_connected_display).ok_or("no GPU found")?;
     if gpus.len() > 1 {
-        tracing::info!(gpus = ?gpus, "several GPUs; rendering on {}", path.display());
+        let connected: Vec<_> = gpus.iter().filter(|g| has_connected_display(g)).collect();
+        tracing::info!(gpus = ?gpus, boot = ?boot, connected = ?connected, "several GPUs; rendering on {}", path.display());
+        if gpus.iter().any(|g| *g != path && has_connected_display(g)) {
+            tracing::warn!("displays connected to other GPUs stay dark: only {} is driven", path.display());
+        }
     }
     let node = DrmNode::from_path(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     tracing::info!("using GPU {}", path.display());
@@ -328,6 +371,8 @@ pub fn init(state: &mut Lumen, session: LibSeatSession, notifier: smithay::backe
                 }
             }
         }
+        // One GPU is driven for the whole session (see choose_gpu): GPUs that
+        // appear later (eGPU hotplug) are not used.
         UdevEvent::Added { .. } | UdevEvent::Removed { .. } => {}
     })
     .map_err(|e| format!("udev source: {e}"))?;
@@ -785,7 +830,26 @@ fn on_vblank(state: &mut Lumen, crtc: crtc::Handle, metadata: &mut Option<DrmEve
 
 #[cfg(test)]
 mod tests {
-    use super::VrrMode;
+    use super::{choose_gpu, VrrMode};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn boot_gpu_unless_only_another_one_has_a_display() {
+        let (igpu, dgpu) = (PathBuf::from("/dev/dri/card0"), PathBuf::from("/dev/dri/card1"));
+        let gpus = [igpu.clone(), dgpu.clone()];
+        let only = |p: &'static str| move |g: &Path| g == Path::new(p);
+        // Both lit (laptop panel on the iGPU, monitor on the dGPU): the boot GPU.
+        assert_eq!(choose_gpu(None, Some(igpu.clone()), &gpus, |_| true), Some(igpu.clone()));
+        // Lid closed, docked to the dGPU's HDMI port: the dGPU.
+        assert_eq!(choose_gpu(None, Some(igpu.clone()), &gpus, only("/dev/dri/card1")), Some(dgpu.clone()));
+        // Nothing connected yet: stay on the boot GPU and wait for hotplug.
+        assert_eq!(choose_gpu(None, Some(igpu.clone()), &gpus, |_| false), Some(igpu.clone()));
+        // No boot_vga flag: the first GPU, with the same fallback.
+        assert_eq!(choose_gpu(None, None, &gpus, only("/dev/dri/card1")), Some(dgpu.clone()));
+        // LUMEN_DRM_DEVICE wins.
+        assert_eq!(choose_gpu(Some(dgpu.clone()), Some(igpu.clone()), &gpus, |_| true), Some(dgpu));
+        assert_eq!(choose_gpu(None, None, &[], |_| true), None);
+    }
 
     #[test]
     fn vrr_mode_follows_fullscreen_by_default() {
