@@ -48,7 +48,7 @@ const USAGE: &str = "usage: lumen [--backend auto|udev|winit|headless] [--size W
               headless: offscreen output for tests and profiling
   --size      headless output size in pixels (default 1280x800)
   --scale     output scale for headless (others use LUMEN_SCALE or the display's DPI)
-  -- cmd      program to start once the compositor is running
+  -- cmd      program to start with the desktop (after the first frame, with DISPLAY)
 
 environment: LUMEN_LOG (log filter), LUMEN_THEME, LUMEN_KEYBINDINGS, LUMEN_INPUT (input.toml), LUMEN_FAVORITES,
              LUMEN_SCALE, LUMEN_IPC, LUMEN_HUD, XKB_DEFAULT_LAYOUT/VARIANT/OPTIONS/MODEL (override input.toml),
@@ -191,9 +191,7 @@ fn run(args: Args, sigfd: OwnedFd) -> Result<(), String> {
         })
         .map_err(|e| format!("signal source: {e}"))?;
 
-    if !args.autostart.is_empty() {
-        state.spawn(&args.autostart);
-    }
+    state.autostart = args.autostart;
     state.queue_redraw_all();
 
     event_loop

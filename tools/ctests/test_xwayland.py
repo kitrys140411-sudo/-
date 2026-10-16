@@ -743,3 +743,24 @@ def test_x11_native_at_scale_2(t):
     img = c.screenshot("native2")
     r, g, b = img.mean(int(2 * px) + 40, int(2 * py) + 30, int(2 * px) + 160, int(2 * py) + 90)
     t.check(r > 180 and g > 140 and b < 140, f"menu color {(r, g, b)}")
+
+
+def test_autostart_gets_display(t):
+    """`lumen -- command` (a session script, Steam in big-picture mode) starts with the
+    desktop and gets DISPLAY like every other program the compositor starts."""
+    from headless import Compositor
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    bins = os.path.join(root, "build", "target", "x86_64-unknown-linux-musl", os.environ.get("LUMEN_PROFILE", "release"))
+    os.makedirs(t.dir, exist_ok=True)
+    log, script, wrapper = (os.path.join(t.dir, n) for n in ("env.txt", "auto.sh", "lumen-autostart"))
+    with open(script, "w") as f:
+        f.write(f'echo "DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY" > {log}.tmp && mv {log}.tmp {log}\n')
+    with open(wrapper, "w") as f:
+        f.write(f'#!/bin/sh\nexec {os.path.join(bins, "lumen")} "$@" -- sh {script}\n')
+    os.chmod(wrapper, 0o755)
+    c = Compositor(os.path.join(t.dir, "c0"), wrapper, os.path.join(bins, "lumen-testclient"))
+    t.compositors.append(c)
+    c.wait(lambda: os.path.exists(log), 20, "autostart program")
+    got = open(log).read().strip()
+    x = xinfo(c)
+    t.check(got == f"DISPLAY={x['display']} WAYLAND_DISPLAY={c.socket}", f"{got!r} vs {x}")

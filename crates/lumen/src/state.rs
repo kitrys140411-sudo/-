@@ -191,6 +191,8 @@ pub struct Lumen {
     /// The surface whose pointer constraint is active.
     pub constrained: Option<WlSurface>,
     pub idle: crate::gaming::Idle,
+    /// `lumen -- command`: started with the desktop (see [`Lumen::notify_ready`]).
+    pub autostart: Vec<String>,
 }
 
 impl Lumen {
@@ -333,6 +335,7 @@ impl Lumen {
             idle_inhibit_state,
             constrained: None,
             idle: crate::gaming::Idle::new(),
+            autostart: Vec::new(),
         }
     }
 
@@ -385,8 +388,16 @@ impl Lumen {
             }
         }
         tracing::info!("first frame presented");
-        // X11 support starts once the desktop is on screen (off the boot path).
-        self.lh.insert_idle(|state| state.start_xwayland());
+        // X11 support starts once the desktop is on screen (off the boot
+        // path), and the autostart program right after it, so it gets
+        // DISPLAY and does not compete with the first frame for the CPU.
+        self.lh.insert_idle(|state| {
+            state.start_xwayland();
+            let cmd = std::mem::take(&mut state.autostart);
+            if !cmd.is_empty() {
+                state.spawn(&cmd);
+            }
+        });
         // The idle clock starts with the desktop.
         self.note_input();
         for (title, body) in std::mem::take(&mut self.startup_notices) {
